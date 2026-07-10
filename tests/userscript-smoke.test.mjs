@@ -6,7 +6,7 @@ const scriptPath = new URL('../aliexpress-activity-helper.user.js', import.meta.
 const source = fs.readFileSync(scriptPath, 'utf8');
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.8\.5/);
+assert.match(metadata, /@version\s+0\.8\.6/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
 assert.match(metadata, /@noframes/);
@@ -118,12 +118,14 @@ vm.runInNewContext(source, {
 assert.equal(mountedRoot?.id, 'aeaa-root');
 assert.match(mountedRoot?.innerHTML || '', /AE 活动助手/);
 
-function createSaleScenario({ failCatalog = false } = {}) {
+function createSaleScenario({ failCatalog = false, ambiguousPlatform = false, localizedSecondTime = false } = {}) {
   const handlers = {};
   const calls = [];
   const productId = '1005000000000001';
   const startTime = new Date(2026, 6, 15, 23, 0).getTime();
   const endTime = new Date(2026, 6, 20, 14, 59).getTime();
+  const saleStartText = localizedSecondTime ? '2026-07-16 00:00' : '2026-07-15 23:00';
+  const saleEndText = localizedSecondTime ? '2026-07-20 13:59' : '2026-07-20 14:59';
   let root;
   const makeDl = (source, name) => ({
     querySelector(selector) {
@@ -132,7 +134,7 @@ function createSaleScenario({ failCatalog = false } = {}) {
     querySelectorAll(selector) {
       return selector === 'dd' ? [
         { innerText: name, textContent: name },
-        { innerText: '2026-07-15 23:00 - 2026-07-20 14:59', textContent: '2026-07-15 23:00 - 2026-07-20 14:59' }
+        { innerText: `${saleStartText} - ${saleEndText}`, textContent: `${saleStartText} - ${saleEndText}` }
       ] : [];
     }
   });
@@ -201,16 +203,25 @@ function createSaleScenario({ failCatalog = false } = {}) {
                           dataSource: [
                             '<dl><dt>平台活动：</dt>',
                             '<dd>【2026年7月A+】入围活动-非俄语区&amp;欧盟地区</dd>',
-                            '<dd>2026-07-15 23:00 - 2026-07-20 14:59</dd></dl>',
+                            `<dd>${saleStartText} - ${saleEndText}</dd></dl>`,
                             '<dl><dt>店铺活动：</dt>',
                             '<dd>【2026年7月A+】外围活动-非俄语区&amp;欧盟地区</dd>',
-                            '<dd>2026-07-15 23:00 - 2026-07-20 14:59</dd></dl>'
+                            `<dd>${saleStartText} - ${saleEndText}</dd></dl>`
                           ]
                         }]
                       }]
                     }
                   }]
                 }
+              }
+            });
+          }
+          if (options.api === 'mtop.global.campaign.merchants.activity.items.query') {
+            const isSignedPlatformActivity = String(options.data.activityId) === '30000211727';
+            return Promise.resolve({
+              ret: ['SUCCESS::调用成功'],
+              data: {
+                dataList: isSignedPlatformActivity ? [{ itemId: productId, itemStatus: 'AUDIT_PASSED' }] : []
               }
             });
           }
@@ -251,10 +262,25 @@ function createSaleScenario({ failCatalog = false } = {}) {
                       showStartTime: startTime,
                       startTime: startTime + 23 * 60 * 60 * 1000,
                       endTime
+                    }, ...(localizedSecondTime ? [{
+                      showStartTime: startTime + 60 * 60 * 1000,
+                      startTime: startTime + 24 * 60 * 60 * 1000,
+                      endTime: endTime - 60 * 60 * 1000
+                    }] : [])]),
+                    onlineStartTime: startTime + 23 * 60 * 60 * 1000,
+                    onlineEndTime: endTime
+                  }, ...(ambiguousPlatform ? [{
+                    campaignId: '64630',
+                    activityId: '30000211729',
+                    activityName: '入围活动-非JV&欧盟地区',
+                    localizeActTime: JSON.stringify([{
+                      showStartTime: startTime,
+                      startTime: startTime + 23 * 60 * 60 * 1000,
+                      endTime
                     }]),
                     onlineStartTime: startTime + 23 * 60 * 60 * 1000,
                     onlineEndTime: endTime
-                  }]
+                  }] : [])]
                 }]
               }
             }
@@ -323,16 +349,33 @@ const productQuery = saleScenario.calls.find((call) => call.api === 'mtop.global
 assert.deepEqual(JSON.parse(productQuery.data.jsonBody).filter.querySelectInput, { key: 1, value: saleScenario.productId });
 assert.match(saleScenario.getRoot()?.innerHTML || '', /外围活动-非俄语区&amp;欧盟地区/);
 assert.match(saleScenario.getRoot()?.innerHTML || '', /30000211726/);
-assert.doesNotMatch(saleScenario.getRoot()?.innerHTML || '', /30000211727/);
-assert.match(saleScenario.getRoot()?.innerHTML || '', /合并 1 条平台\/店铺关联报名/);
+assert.match(saleScenario.getRoot()?.innerHTML || '', /入围活动-非俄语区&amp;欧盟地区/);
+assert.match(saleScenario.getRoot()?.innerHTML || '', /30000211727/);
+assert.match(saleScenario.getRoot()?.innerHTML || '', /保留全部 2 条平台和店铺活动/);
 assert.match(saleScenario.getRoot()?.innerHTML || '', /没有遍历全店活动/);
+
+const ambiguousScenario = createSaleScenario({ ambiguousPlatform: true });
+await runScan(ambiguousScenario);
+const verificationCalls = ambiguousScenario.calls
+  .filter((call) => call.api === 'mtop.global.campaign.merchants.activity.items.query');
+assert.equal(verificationCalls.length, 2);
+assert.match(ambiguousScenario.getRoot()?.innerHTML || '', /30000211726/);
+assert.match(ambiguousScenario.getRoot()?.innerHTML || '', /30000211727/);
+assert.doesNotMatch(ambiguousScenario.getRoot()?.innerHTML || '', /30000211729/);
+assert.match(ambiguousScenario.getRoot()?.innerHTML || '', /按商品实际报名记录确认 1 个活动编号/);
+
+const localizedScenario = createSaleScenario({ localizedSecondTime: true });
+await runScan(localizedScenario);
+assert.match(localizedScenario.getRoot()?.innerHTML || '', /30000211726/);
+assert.match(localizedScenario.getRoot()?.innerHTML || '', /30000211727/);
+assert.doesNotMatch(localizedScenario.getRoot()?.innerHTML || '', /无法唯一匹配活动编号/);
 
 const errorScenario = createSaleScenario({ failCatalog: true });
 await runScan(errorScenario);
 assert.doesNotMatch(errorScenario.getRoot()?.innerHTML || '', /\[object Object\]/);
 assert.match(errorScenario.getRoot()?.innerHTML || '', /渠道编号错误/);
 
-async function runExitEntryScenario(entryLabel, expectNavigation = true) {
+async function runExitEntryScenario(entryLabel, expectNavigation = true, saleSource = '店铺活动') {
   const productId = '1005000000000002';
   const campaignId = '64600';
   const activityId = '30000211756';
@@ -392,8 +435,8 @@ async function runExitEntryScenario(entryLabel, expectNavigation = true) {
     itemId: productId,
     campaignId,
     activityId,
-    activityName: '测试外围活动',
-    saleSource: '店铺活动',
+    activityName: saleSource === '平台活动' ? '测试入围活动' : '测试外围活动',
+    saleSource,
     channelId: '9999999'
   };
   storage.set('ae.activity.assistant.v4', JSON.stringify({
@@ -404,7 +447,7 @@ async function runExitEntryScenario(entryLabel, expectNavigation = true) {
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.8.5'
+    scriptVersion: '0.8.6'
   }));
 
   const document = {
@@ -519,6 +562,7 @@ async function runExitEntryScenario(entryLabel, expectNavigation = true) {
 
 await runExitEntryScenario('商品报名');
 await runExitEntryScenario('同意并下一步');
+await runExitEntryScenario('入围活动报名', true, '平台活动');
 await runExitEntryScenario('无关按钮', false);
 
 console.log('userscript smoke test passed');

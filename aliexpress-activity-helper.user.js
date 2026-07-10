@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.8.5
+// @version      0.8.6
 // @description  速卖通活动助手：按商品 ID 读取商品管理 SALE 数据中的报名活动，并按页面按钮流程一键普通退出。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
@@ -24,7 +24,7 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.8.5';
+  const SCRIPT_VERSION = '0.8.6';
   const STOCKOUT_REASON = '库存不足';
   const REQUEST_TIMEOUT_MS = 20000;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -313,6 +313,7 @@
     for (const campaign of campaignList || []) {
       for (const activity of campaign.activityList || []) {
         const activityTimeRange = activity.activityTimeRange || {};
+        const localizedTimeRanges = parseLocalizedTimeRanges(activity.localizeActTime);
         const localizedTimes = summarizeLocalizedTimes(activity.localizeActTime);
         rows.push({
           groupName: `全店活动/${tabType}`,
@@ -336,22 +337,33 @@
           ),
           oneWayType: activity.oneWayType || '',
           activityUrl: activity.activityUrl || '',
-          channelId: String(activity.channelId || campaign.channelId || channelId)
+          channelId: String(activity.channelId || campaign.channelId || channelId),
+          localizedTimeRanges
         });
       }
     }
     return rows.filter((item) => item.campaignId && item.activityId);
   }
 
-  function summarizeLocalizedTimes(value) {
+  function parseLocalizedTimeRanges(value) {
     const rows = Array.isArray(value) ? value : safeJson(value, []);
-    if (!Array.isArray(rows) || !rows.length) return {};
+    if (!Array.isArray(rows)) return [];
+    return rows.map((row) => ({
+      showStartTime: String(row && (row.showStartTime || row.displayStartTime) || ''),
+      activityStartTime: String(row && (row.activityStartTime || row.startTime || row.onlineStartTime) || ''),
+      activityEndTime: String(row && (row.activityEndTime || row.endTime || row.onlineEndTime) || '')
+    })).filter((row) => row.showStartTime || row.activityStartTime || row.activityEndTime);
+  }
+
+  function summarizeLocalizedTimes(value) {
+    const rows = parseLocalizedTimeRanges(value);
+    if (!rows.length) return {};
     const numericValues = (key) => rows
       .map((row) => Number(row && row[key]))
       .filter((item) => Number.isFinite(item) && item > 0);
     const showStarts = numericValues('showStartTime');
-    const starts = numericValues('startTime');
-    const ends = numericValues('endTime');
+    const starts = numericValues('activityStartTime');
+    const ends = numericValues('activityEndTime');
     return {
       showStartTime: showStarts.length ? Math.min(...showStarts) : '',
       startTime: starts.length ? Math.min(...starts) : '',
@@ -611,40 +623,58 @@
     const saleKind = activityKind(saleActivity.name);
     const catalogKind = activityKind(activity.activityName);
     if (saleKind && catalogKind && saleKind !== catalogKind) return false;
-    const starts = [formatTimeKey(activity.showStartTime), formatTimeKey(activity.activityStartTime)].filter(Boolean);
-    if (!starts.includes(saleActivity.start)) return false;
-    return formatTimeKey(activity.activityEndTime) === saleActivity.end;
+    const ranges = [{
+      showStartTime: activity.showStartTime,
+      activityStartTime: activity.activityStartTime,
+      activityEndTime: activity.activityEndTime
+    }, ...(activity.localizedTimeRanges || [])];
+    return ranges.some((range) => {
+      const starts = [formatTimeKey(range.showStartTime), formatTimeKey(range.activityStartTime)].filter(Boolean);
+      return starts.includes(saleActivity.start) && formatTimeKey(range.activityEndTime) === saleActivity.end;
+    });
   }
 
-  function matchSaleActivities(saleActivities, catalog) {
+  async function matchSaleActivities(saleActivities, catalog, productId) {
     const matched = [];
     const unresolved = [];
     const used = new Set();
+    let verifiedCandidateCount = 0;
+    let verifiedMatchCount = 0;
     for (const saleActivity of saleActivities) {
       const candidates = catalog
         .filter((activity) => !used.has(`${activity.campaignId}:${activity.activityId}`) && catalogMatchesSale(activity, saleActivity))
         .map((activity) => ({ activity, score: bigramScore(saleActivity.name, `${activity.campaignName || ''} ${activity.activityName || ''}`) }))
         .sort((left, right) => right.score - left.score);
-      if (!candidates.length || (candidates.length > 1 && candidates[0].score - candidates[1].score < 0.08)) {
+      if (!candidates.length) {
         unresolved.push(saleActivity);
         continue;
       }
-      const winner = candidates[0].activity;
-      used.add(`${winner.campaignId}:${winner.activityId}`);
-      matched.push({ saleActivity, activity: winner });
-    }
-    return { matched, unresolved };
-  }
 
-  function preferShopExitEntries(saleActivities) {
-    const pairKey = (item) => `${campaignKey(item.name)}|${item.start}|${item.end}`;
-    const shopKeys = new Set(
-      saleActivities.filter((item) => item.source === '店铺活动').map(pairKey)
-    );
-    const activities = saleActivities.filter((item) => (
-      item.source === '店铺活动' || !shopKeys.has(pairKey(item))
-    ));
-    return { activities, pairedCount: saleActivities.length - activities.length };
+      const closeCandidates = candidates.filter((candidate) => candidates[0].score - candidate.score < 0.08);
+      if (closeCandidates.length === 1) {
+        const winner = closeCandidates[0].activity;
+        used.add(`${winner.campaignId}:${winner.activityId}`);
+        matched.push({ saleActivity, activity: winner });
+        continue;
+      }
+
+      verifiedCandidateCount += closeCandidates.length;
+      const verified = [];
+      for (const candidate of closeCandidates) {
+        const signedItem = await querySignedItem(candidate.activity, productId);
+        if (signedItem) verified.push(candidate.activity);
+      }
+      if (!verified.length) {
+        unresolved.push(saleActivity);
+        continue;
+      }
+      for (const activity of verified) {
+        used.add(`${activity.campaignId}:${activity.activityId}`);
+        matched.push({ saleActivity, activity });
+      }
+      verifiedMatchCount += verified.length;
+    }
+    return { matched, unresolved, verifiedCandidateCount, verifiedMatchCount };
   }
 
   function isEnded(activity) {
@@ -707,11 +737,16 @@
         const end = new Date(item.end.replace(/-/g, '/')).getTime();
         return !end || end >= Date.now();
       });
-      const { activities: exitEntries, pairedCount } = preferShopExitEntries(activeSaleActivities);
-      log('ok', `SALE 显示 ${saleActivities.length} 条活动记录；合并 ${pairedCount} 条平台/店铺关联报名后，正在为 ${exitEntries.length} 个实际退出入口匹配活动编号。`);
+      const exitEntries = activeSaleActivities;
+      const platformCount = exitEntries.filter((item) => item.source === '平台活动').length;
+      const shopCount = exitEntries.filter((item) => item.source === '店铺活动').length;
+      log('ok', `SALE 显示 ${saleActivities.length} 条活动记录；未结束记录中保留全部 ${exitEntries.length} 条平台和店铺活动（平台 ${platformCount}，店铺 ${shopCount}），正在分别匹配活动编号。`);
 
       const catalog = (await resolveActivities()).filter((item) => !isEnded(item));
-      const { matched, unresolved } = matchSaleActivities(exitEntries, catalog);
+      const { matched, unresolved, verifiedCandidateCount, verifiedMatchCount } = await matchSaleActivities(exitEntries, catalog, productId);
+      if (verifiedCandidateCount) {
+        log('ok', `活动名称存在相近候选；已核对 ${verifiedCandidateCount} 个候选，并按商品实际报名记录确认 ${verifiedMatchCount} 个活动编号。`);
+      }
       if (unresolved.length) {
         const preview = unresolved.slice(0, 3).map((item) => item.name).join('；');
         throw new Error(`SALE 中有 ${unresolved.length} 个活动无法唯一匹配活动编号，已停止以避免漏退或错退：${preview}`);
