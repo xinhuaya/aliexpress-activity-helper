@@ -1,0 +1,7 @@
+.chrome-ae-profile/
+api-runner/
+dist/
+*.png
+*.zip
+实测记录-*.md
+安装前先看.txt

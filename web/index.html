@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>AE 活动助手</title>
+  <style>
+    :root {
+      color: #17211e;
+      background: #f4f6f5;
+      font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      font-synthesis: none;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: #f4f6f5;
+    }
+
+    .topbar {
+      border-bottom: 1px solid #d8dfdc;
+      background: #173d34;
+      color: #fff;
+    }
+
+    .topbar-inner,
+    main,
+    footer {
+      width: min(760px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    .topbar-inner {
+      display: flex;
+      min-height: 58px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .brand { font-size: 17px; font-weight: 700; }
+    .channel { color: #cfe5de; font-size: 13px; }
+
+    main { padding: 58px 0 48px; }
+
+    h1 {
+      margin: 0 0 14px;
+      font-size: 38px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      max-width: 620px;
+      margin: 0;
+      color: #4f5e59;
+      font-size: 16px;
+      line-height: 1.8;
+    }
+
+    .version {
+      margin: 30px 0 12px;
+      font-size: 15px;
+    }
+
+    .install-button {
+      display: inline-flex;
+      min-height: 44px;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid #0f62d6;
+      border-radius: 6px;
+      padding: 0 20px;
+      background: #0f62d6;
+      color: #fff;
+      font-size: 16px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .install-button:hover { background: #0b50b2; }
+    .install-button:focus-visible { outline: 3px solid #f2b84b; outline-offset: 3px; }
+
+    .notice {
+      margin-top: 18px;
+      border-left: 4px solid #d79b28;
+      padding: 10px 14px;
+      background: #fff8e8;
+      color: #5b4a26;
+      line-height: 1.7;
+    }
+
+    .steps {
+      margin-top: 52px;
+      border-top: 1px solid #d8dfdc;
+      padding-top: 28px;
+    }
+
+    h2 { margin: 0 0 16px; font-size: 21px; letter-spacing: 0; }
+    ol { margin: 0; padding-left: 22px; color: #35433e; line-height: 1.9; }
+
+    footer {
+      border-top: 1px solid #d8dfdc;
+      padding: 22px 0 34px;
+      color: #65726e;
+      font-size: 13px;
+    }
+
+    footer a { color: #0f62d6; }
+
+    @media (max-width: 520px) {
+      .topbar-inner { align-items: flex-start; flex-direction: column; justify-content: center; padding: 12px 0; }
+      main { padding-top: 38px; }
+      h1 { font-size: 32px; }
+      .install-button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <span class="brand">AE 活动助手</span>
+      <span class="channel">稳定更新通道</span>
+    </div>
+  </header>
+
+  <main>
+    <h1>安装 AE 活动助手</h1>
+    <p class="lead">用于速卖通卖家后台的活动查询与普通退出。安装后，后续版本继续使用同一个地址更新。</p>
+
+    <p class="version">当前稳定版 <strong>v__VERSION__</strong></p>
+    <a class="install-button" href="__DOWNLOAD_URL__">安装或更新稳定版</a>
+
+    <div class="notice">首次迁移到自动更新版时，请允许 Tampermonkey 覆盖旧脚本。安装完成后刷新速卖通后台页面。</div>
+
+    <section class="steps">
+      <h2>安装步骤</h2>
+      <ol>
+        <li>确认 Chrome 已安装并启用 Tampermonkey。</li>
+        <li>点击上方按钮，在 Tampermonkey 页面确认安装或更新。</li>
+        <li>返回速卖通卖家后台并刷新，右下角应显示“AE 活动助手”。</li>
+      </ol>
+    </section>
+  </main>
+
+  <footer>
+    更新遇到问题时，前往 <a href="https://github.com/xinhuaya/aliexpress-activity-helper/issues">问题反馈</a>。
+  </footer>
+</body>
+</html>

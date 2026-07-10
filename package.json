@@ -1,0 +1,12 @@
+{
+  "name": "aliexpress-activity-helper",
+  "version": "0.8.5",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-release.mjs",
+    "test": "node tests/userscript-smoke.test.mjs",
+    "test:release": "node tests/release-smoke.test.mjs",
+    "verify": "npm run test && npm run build && npm run test:release"
+  }
+}

@@ -1,0 +1,524 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+
+const scriptPath = new URL('../aliexpress-activity-helper.user.js', import.meta.url);
+const source = fs.readFileSync(scriptPath, 'utf8');
+
+const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
+assert.match(metadata, /@version\s+0\.8\.5/);
+assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
+assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
+assert.match(metadata, /@noframes/);
+assert.doesNotMatch(source, /codex/i);
+assert.match(metadata, /@match\s+https:\/\/\*\.aliexpress\.com\/\*/);
+assert.doesNotMatch(source, /channelId=2350569/);
+assert.match(source, /直接读取商品管理中该商品 SALE/);
+assert.match(source, /parseSaleTooltip/);
+assert.match(source, /localizeActTime/);
+assert.match(source, /同意并下一步/);
+assert.match(source, /enterActivitySignupStep/);
+assert.match(source, /请确认已进入正确活动页面/);
+assert.doesNotMatch(source, /包含已结束活动/);
+assert.match(source, /mtop\.global\.merchant\.new\.product\.manager\.render\.list/);
+assert.doesNotMatch(source, /mapWithRateLimit/);
+assert.match(source, /baxia-dialog-mask/);
+assert.match(source, /_____tmd_____\/punish/);
+
+const frameWindow = { location: { search: '', pathname: '/', href: 'https://csp.aliexpress.com/' } };
+frameWindow.self = frameWindow;
+frameWindow.top = {};
+assert.doesNotThrow(() => vm.runInNewContext(source, { window: frameWindow }));
+
+function matchPattern(pattern, target) {
+  const parts = pattern.match(/^(https?):\/\/([^/]+)(\/.*)$/);
+  assert.ok(parts, `Unsupported pattern: ${pattern}`);
+  const [, protocol, hostPattern, pathPattern] = parts;
+  const url = new URL(target);
+  const baseHost = hostPattern.startsWith('*.') ? hostPattern.slice(2) : hostPattern;
+  const hostMatches = hostPattern.startsWith('*')
+    ? url.hostname === baseHost || url.hostname.endsWith(`.${baseHost}`)
+    : url.hostname === hostPattern;
+  const pathRegex = new RegExp(`^${pathPattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`);
+  return url.protocol === `${protocol}:` && hostMatches && pathRegex.test(url.pathname);
+}
+
+assert.equal(matchPattern('https://*.aliexpress.com/*', 'https://eu.seller.aliexpress.com/apps/product/list'), true);
+assert.equal(matchPattern('https://*.aliexpress.com/*', 'https://seller.example.com/apps/product/list'), false);
+
+function createRoot(onMount, handlers) {
+  return {
+    id: '',
+    innerHTML: '',
+    style: {},
+    addEventListener(type, handler) {
+      handlers[type] = handler;
+    },
+    querySelector() {
+      return null;
+    },
+    mount() {
+      onMount(this);
+    }
+  };
+}
+
+let mountedRoot;
+const storage = new Map();
+const mountHandlers = {};
+const mountDocument = {
+  readyState: 'complete',
+  documentElement: {
+    appendChild(node) {
+      mountedRoot = node;
+    }
+  },
+  getElementById() {
+    return null;
+  },
+  createElement() {
+    return createRoot((node) => { mountedRoot = node; }, mountHandlers);
+  },
+  addEventListener() {},
+  querySelector() {
+    return null;
+  },
+  querySelectorAll() {
+    return [];
+  }
+};
+const mountWindow = { location: { search: '', pathname: '/', href: 'https://eu.seller.aliexpress.com/' } };
+mountWindow.self = mountWindow;
+mountWindow.top = mountWindow;
+
+vm.runInNewContext(source, {
+  console,
+  Date,
+  JSON,
+  URLSearchParams,
+  document: mountDocument,
+  window: mountWindow,
+  localStorage: {
+    getItem(key) {
+      return storage.get(key) ?? null;
+    },
+    setItem(key, value) {
+      storage.set(key, value);
+    }
+  },
+  setInterval() {
+    return 1;
+  },
+  clearInterval() {},
+  setTimeout() {
+    return 1;
+  }
+});
+
+assert.equal(mountedRoot?.id, 'aeaa-root');
+assert.match(mountedRoot?.innerHTML || '', /AE 活动助手/);
+
+function createSaleScenario({ failCatalog = false } = {}) {
+  const handlers = {};
+  const calls = [];
+  const productId = '1005000000000001';
+  const startTime = new Date(2026, 6, 15, 23, 0).getTime();
+  const endTime = new Date(2026, 6, 20, 14, 59).getTime();
+  let root;
+  const makeDl = (source, name) => ({
+    querySelector(selector) {
+      return selector === 'dt' ? { innerText: `${source}：`, textContent: `${source}：` } : null;
+    },
+    querySelectorAll(selector) {
+      return selector === 'dd' ? [
+        { innerText: name, textContent: name },
+        { innerText: '2026-07-15 23:00 - 2026-07-20 14:59', textContent: '2026-07-15 23:00 - 2026-07-20 14:59' }
+      ] : [];
+    }
+  });
+  const platformDl = makeDl('平台活动', '【2026年7月A+】入围活动-非俄语区&欧盟地区');
+  const shopDl = makeDl('店铺活动', '【2026年7月A+】外围活动-非俄语区&欧盟地区');
+  const createParserContainer = () => ({
+    html: '',
+    set innerHTML(value) {
+      this.html = value;
+    },
+    get innerHTML() {
+      return this.html;
+    },
+    querySelectorAll(selector) {
+      return selector === 'dl' && this.html.includes('店铺活动') ? [platformDl, shopDl] : [];
+    }
+  });
+
+  const document = {
+    readyState: 'complete',
+    title: '商品管理',
+    body: { innerText: '商品管理' },
+    documentElement: {
+      appendChild(node) {
+        root = node;
+      }
+    },
+    getElementById() {
+      return null;
+    },
+    createElement() {
+      return root ? createParserContainer() : createRoot((node) => { root = node; }, handlers);
+    },
+    addEventListener() {},
+    querySelector() {
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    }
+  };
+
+  const window = {
+    location: {
+      search: '?channelId=9999999',
+      pathname: '/m_apps/home',
+      href: 'https://csp.aliexpress.com/m_apps/home?channelId=9999999'
+    },
+    lib: {
+      mtop: {
+        request(options) {
+          calls.push(options);
+          if (options.api === 'mtop.global.merchant.new.product.manager.render.list') {
+            return Promise.resolve({
+              ret: ['SUCCESS::调用成功'],
+              data: {
+                table: {
+                  dataSource: [{
+                    productId,
+                    itemDesc: {
+                      iconList: [{
+                        uiType: 'hoverTip',
+                        type: 'text',
+                        text: 'SALE',
+                        hoverTip: [{
+                          dataSource: [
+                            '<dl><dt>平台活动：</dt>',
+                            '<dd>【2026年7月A+】入围活动-非俄语区&amp;欧盟地区</dd>',
+                            '<dd>2026-07-15 23:00 - 2026-07-20 14:59</dd></dl>',
+                            '<dl><dt>店铺活动：</dt>',
+                            '<dd>【2026年7月A+】外围活动-非俄语区&amp;欧盟地区</dd>',
+                            '<dd>2026-07-15 23:00 - 2026-07-20 14:59</dd></dl>'
+                          ]
+                        }]
+                      }]
+                    }
+                  }]
+                }
+              }
+            });
+          }
+          if (options.api !== 'mtop.global.campaign.merchants.activity.list.nodada.data') {
+            return Promise.reject({ ret: ['FAIL::unexpected api'] });
+          }
+          if (failCatalog) return Promise.reject({ ret: ['FAIL_CHANNEL::渠道编号错误'] });
+          return Promise.resolve({
+            ret: ['SUCCESS::调用成功'],
+            data: {
+              data: {
+                currentPage: 1,
+                pageSize: 50,
+                totalCount: 1,
+                campaignList: [{
+                  campaignId: '64630',
+                  campaignName: '2026年7月A+',
+                  activityList: [{
+                    campaignId: '64630',
+                    activityId: '30000211726',
+                    activityName: '外围活动-非JV&欧盟地区（可点击下一步报名入围）',
+                    localizeActTime: JSON.stringify([{
+                      showStartTime: startTime + 60 * 60 * 1000,
+                      startTime: startTime + 24 * 60 * 60 * 1000,
+                      endTime: endTime - 60 * 60 * 1000
+                    }, {
+                      showStartTime: startTime,
+                      startTime: startTime + 23 * 60 * 60 * 1000,
+                      endTime
+                    }]),
+                    onlineStartTime: startTime + 23 * 60 * 60 * 1000,
+                    onlineEndTime: endTime
+                  }, {
+                    campaignId: '64630',
+                    activityId: '30000211727',
+                    activityName: '入围活动-非JV&欧盟地区',
+                    localizeActTime: JSON.stringify([{
+                      showStartTime: startTime,
+                      startTime: startTime + 23 * 60 * 60 * 1000,
+                      endTime
+                    }]),
+                    onlineStartTime: startTime + 23 * 60 * 60 * 1000,
+                    onlineEndTime: endTime
+                  }]
+                }]
+              }
+            }
+          });
+        }
+      }
+    }
+  };
+  window.self = window;
+  window.top = window;
+
+  vm.runInNewContext(source, {
+    console,
+    Date,
+    Error,
+    JSON,
+    Map,
+    Promise,
+    URLSearchParams,
+    document,
+    window,
+    localStorage: {
+      getItem() {
+        return null;
+      },
+      setItem() {}
+    },
+    getComputedStyle() {
+      return { display: 'block', visibility: 'visible' };
+    },
+    setInterval() {
+      return 1;
+    },
+    clearInterval() {},
+    clearTimeout() {},
+    setTimeout(callback, ms) {
+      if (ms <= 500) queueMicrotask(callback);
+      return 1;
+    }
+  });
+
+  return { handlers, calls, getRoot: () => root, productId };
+}
+
+async function runScan(scenario) {
+  scenario.handlers.input({ target: { dataset: { field: 'product' }, value: scenario.productId } });
+  scenario.handlers.click({
+    target: {
+      closest() {
+        return { dataset: { act: 'scan' } };
+      }
+    }
+  });
+  for (let index = 0; index < 30; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+const saleScenario = createSaleScenario();
+await runScan(saleScenario);
+assert.equal(saleScenario.calls.filter((call) => call.api === 'mtop.global.merchant.new.product.manager.render.list').length, 1);
+assert.equal(saleScenario.calls.filter((call) => call.api === 'mtop.global.campaign.merchants.activity.list.nodada.data').length, 3);
+assert.equal(saleScenario.calls.some((call) => call.api === 'mtop.global.campaign.merchants.activity.items.query'), false);
+assert.equal(saleScenario.calls.every((call) => call.data?.channelId === '9999999'), true);
+const productQuery = saleScenario.calls.find((call) => call.api === 'mtop.global.merchant.new.product.manager.render.list');
+assert.deepEqual(JSON.parse(productQuery.data.jsonBody).filter.querySelectInput, { key: 1, value: saleScenario.productId });
+assert.match(saleScenario.getRoot()?.innerHTML || '', /外围活动-非俄语区&amp;欧盟地区/);
+assert.match(saleScenario.getRoot()?.innerHTML || '', /30000211726/);
+assert.doesNotMatch(saleScenario.getRoot()?.innerHTML || '', /30000211727/);
+assert.match(saleScenario.getRoot()?.innerHTML || '', /合并 1 条平台\/店铺关联报名/);
+assert.match(saleScenario.getRoot()?.innerHTML || '', /没有遍历全店活动/);
+
+const errorScenario = createSaleScenario({ failCatalog: true });
+await runScan(errorScenario);
+assert.doesNotMatch(errorScenario.getRoot()?.innerHTML || '', /\[object Object\]/);
+assert.match(errorScenario.getRoot()?.innerHTML || '', /渠道编号错误/);
+
+async function runExitEntryScenario(entryLabel, expectNavigation = true) {
+  const productId = '1005000000000002';
+  const campaignId = '64600';
+  const activityId = '30000211756';
+  const storage = new Map();
+  const handlers = {};
+  let root;
+  let signupVisible = false;
+  let entryClicks = 0;
+  let registeredClicks = 0;
+
+  class FakeInput {
+    constructor() {
+      this.placeholder = '支持商品ID搜索';
+      this.currentValue = '';
+    }
+    focus() {}
+    dispatchEvent() {
+      return true;
+    }
+    getBoundingClientRect() {
+      return { width: 240, height: 32 };
+    }
+  }
+  Object.defineProperty(FakeInput.prototype, 'value', {
+    get() {
+      return this.currentValue;
+    },
+    set(value) {
+      this.currentValue = value;
+    }
+  });
+  const input = new FakeInput();
+  const makeInteractive = (text, onClick) => ({
+    innerText: text,
+    textContent: text,
+    click: onClick,
+    closest() {
+      return this;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    getBoundingClientRect() {
+      return { width: 180, height: 32 };
+    }
+  });
+  const entry = makeInteractive(entryLabel, () => {
+    entryClicks += 1;
+    signupVisible = true;
+  });
+  const registered = makeInteractive('已报名(1)', () => {
+    registeredClicks += 1;
+  });
+
+  const row = {
+    productId,
+    itemId: productId,
+    campaignId,
+    activityId,
+    activityName: '测试外围活动',
+    saleSource: '店铺活动',
+    channelId: '9999999'
+  };
+  storage.set('ae.activity.assistant.v4', JSON.stringify({
+    productId,
+    dryRun: false,
+    logs: [],
+    plan: [row],
+    exitQueue: [row],
+    autoExit: true,
+    channelId: '9999999',
+    scriptVersion: '0.8.5'
+  }));
+
+  const document = {
+    readyState: 'complete',
+    title: '活动报名',
+    body: { innerText: '大促活动指南 外围活动报名' },
+    documentElement: {
+      appendChild(node) {
+        root = node;
+      }
+    },
+    getElementById() {
+      return null;
+    },
+    createElement() {
+      return createRoot((node) => { root = node; }, handlers);
+    },
+    addEventListener() {},
+    querySelector() {
+      return null;
+    },
+    querySelectorAll(selector) {
+      if (selector === 'input') return signupVisible ? [input] : [];
+      if (selector === 'tr,.next-table-row,.ait-table-row,div') return [];
+      if (selector.includes('[role="dialog"]') || selector.includes('[aria-modal="true"]')) return [];
+      if (selector.includes('button') || selector.includes('[role="tab"]') || selector.includes('span,div')) {
+        return [entry, registered];
+      }
+      return [];
+    }
+  };
+  const window = {
+    location: {
+      search: `?campaignId=${campaignId}&activityId=${activityId}&channelId=9999999`,
+      pathname: '/m_apps/campaigns/peripheral-activity',
+      href: `https://csp.aliexpress.com/m_apps/campaigns/peripheral-activity?campaignId=${campaignId}&activityId=${activityId}&channelId=9999999`
+    },
+    lib: {
+      mtop: {
+        request(options) {
+          if (options.api === 'mtop.global.campaign.merchants.activity.items.query') {
+            return Promise.resolve({ ret: ['SUCCESS::调用成功'], data: { dataList: [] } });
+          }
+          return Promise.reject({ ret: ['FAIL::unexpected api'] });
+        }
+      }
+    }
+  };
+  window.self = window;
+  window.top = window;
+
+  class FakeEvent {
+    constructor(type, options) {
+      this.type = type;
+      this.options = options;
+    }
+  }
+
+  vm.runInNewContext(source, {
+    console,
+    Date,
+    Error,
+    JSON,
+    Map,
+    Promise,
+    URLSearchParams,
+    document,
+    window,
+    HTMLInputElement: FakeInput,
+    Event: FakeEvent,
+    KeyboardEvent: FakeEvent,
+    localStorage: {
+      getItem(key) {
+        return storage.get(key) ?? null;
+      },
+      setItem(key, value) {
+        storage.set(key, value);
+      }
+    },
+    getComputedStyle() {
+      return { display: 'block', visibility: 'visible' };
+    },
+    setInterval(callback) {
+      queueMicrotask(callback);
+      return 1;
+    },
+    clearInterval() {},
+    clearTimeout() {},
+    setTimeout(callback, ms) {
+      if (ms < 20000) queueMicrotask(callback);
+      return 1;
+    }
+  });
+
+  for (let index = 0; index < 80; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const html = root?.innerHTML || '';
+  if (expectNavigation) {
+    assert.equal(entryClicks, 1, `${entryLabel} should be clicked once`);
+    assert.equal(registeredClicks, 1, 'registered tab should be opened');
+    assert.equal(input.value, productId, 'product ID should reach the activity search input');
+    assert.match(html, /没有找到商品 1005000000000002 的“申请退出活动”按钮/);
+  } else {
+    assert.equal(entryClicks, 0);
+    assert.equal(registeredClicks, 0);
+    assert.match(html, /请确认已进入正确活动页面/);
+    assert.match(html, /第 2 步“外围活动报名”/);
+    assert.match(html, /商品报名 &gt; 已报名/);
+  }
+}
+
+await runExitEntryScenario('商品报名');
+await runExitEntryScenario('同意并下一步');
+await runExitEntryScenario('无关按钮', false);
+
+console.log('userscript smoke test passed');
