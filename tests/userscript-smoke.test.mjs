@@ -6,7 +6,7 @@ const scriptPath = new URL('../aliexpress-activity-helper.user.js', import.meta.
 const source = fs.readFileSync(scriptPath, 'utf8');
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.8\.6/);
+assert.match(metadata, /@version\s+0\.8\.7/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
 assert.match(metadata, /@noframes/);
@@ -118,7 +118,13 @@ vm.runInNewContext(source, {
 assert.equal(mountedRoot?.id, 'aeaa-root');
 assert.match(mountedRoot?.innerHTML || '', /AE 活动助手/);
 
-function createSaleScenario({ failCatalog = false, ambiguousPlatform = false, localizedSecondTime = false } = {}) {
+function createSaleScenario({
+  failCatalog = false,
+  ambiguousPlatform = false,
+  localizedSecondTime = false,
+  unifiedOnly = false,
+  nonInboundDecoy = false
+} = {}) {
   const handlers = {};
   const calls = [];
   const productId = '1005000000000001';
@@ -254,7 +260,7 @@ function createSaleScenario({ failCatalog = false, ambiguousPlatform = false, lo
                     }]),
                     onlineStartTime: startTime + 23 * 60 * 60 * 1000,
                     onlineEndTime: endTime
-                  }, {
+                  }, ...(unifiedOnly ? [] : [{
                     campaignId: '64630',
                     activityId: '30000211727',
                     activityName: '入围活动-非JV&欧盟地区',
@@ -273,6 +279,17 @@ function createSaleScenario({ failCatalog = false, ambiguousPlatform = false, lo
                     campaignId: '64630',
                     activityId: '30000211729',
                     activityName: '入围活动-非JV&欧盟地区',
+                    localizeActTime: JSON.stringify([{
+                      showStartTime: startTime,
+                      startTime: startTime + 23 * 60 * 60 * 1000,
+                      endTime
+                    }]),
+                    onlineStartTime: startTime + 23 * 60 * 60 * 1000,
+                    onlineEndTime: endTime
+                  }] : [])]), ...(nonInboundDecoy ? [{
+                    campaignId: '64630',
+                    activityId: '30000215638',
+                    activityName: '非欧盟地区-邀约降价榜单-非入围品可被邀约',
                     localizeActTime: JSON.stringify([{
                       showStartTime: startTime,
                       startTime: startTime + 23 * 60 * 60 * 1000,
@@ -370,6 +387,17 @@ assert.match(localizedScenario.getRoot()?.innerHTML || '', /30000211726/);
 assert.match(localizedScenario.getRoot()?.innerHTML || '', /30000211727/);
 assert.doesNotMatch(localizedScenario.getRoot()?.innerHTML || '', /无法唯一匹配活动编号/);
 
+const unifiedEntryScenario = createSaleScenario({ unifiedOnly: true, nonInboundDecoy: true });
+await runScan(unifiedEntryScenario);
+const unifiedEntryHtml = unifiedEntryScenario.getRoot()?.innerHTML || '';
+assert.equal((unifiedEntryHtml.match(/30000211726/g) || []).length, 2);
+assert.doesNotMatch(unifiedEntryHtml, /30000215638/);
+assert.doesNotMatch(unifiedEntryHtml, /无法唯一匹配活动编号/);
+assert.equal(
+  unifiedEntryScenario.calls.some((call) => call.api === 'mtop.global.campaign.merchants.activity.items.query'),
+  false
+);
+
 const errorScenario = createSaleScenario({ failCatalog: true });
 await runScan(errorScenario);
 assert.doesNotMatch(errorScenario.getRoot()?.innerHTML || '', /\[object Object\]/);
@@ -447,7 +475,7 @@ async function runExitEntryScenario(entryLabel, expectNavigation = true, saleSou
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.8.6'
+    scriptVersion: '0.8.7'
   }));
 
   const document = {

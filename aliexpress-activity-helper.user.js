@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.8.6
+// @version      0.8.7
 // @description  速卖通活动助手：按商品 ID 读取商品管理 SALE 数据中的报名活动，并按页面按钮流程一键普通退出。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
@@ -24,7 +24,7 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.8.6';
+  const SCRIPT_VERSION = '0.8.7';
   const STOCKOUT_REASON = '库存不足';
   const REQUEST_TIMEOUT_MS = 20000;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -575,6 +575,7 @@
   function activityKind(value) {
     const text = String(value || '');
     if (text.includes('外围活动')) return '外围';
+    if (text.includes('非入围')) return '非入围';
     if (text.includes('入围活动')) return '入围';
     if (text.includes('外围')) return '外围';
     if (text.includes('入围')) return '入围';
@@ -622,7 +623,9 @@
     if (saleCampaign && catalogCampaign && saleCampaign !== catalogCampaign && !normalizeCampaignKey(fullName).includes(saleCampaign)) return false;
     const saleKind = activityKind(saleActivity.name);
     const catalogKind = activityKind(activity.activityName);
-    if (saleKind && catalogKind && saleKind !== catalogKind) return false;
+    if (catalogKind === '非入围') return false;
+    const isUnifiedInboundEntry = saleActivity.source === '平台活动' && saleKind === '入围' && catalogKind === '外围';
+    if (saleKind && catalogKind && saleKind !== catalogKind && !isUnifiedInboundEntry) return false;
     const ranges = [{
       showStartTime: activity.showStartTime,
       activityStartTime: activity.activityStartTime,
@@ -641,8 +644,9 @@
     let verifiedCandidateCount = 0;
     let verifiedMatchCount = 0;
     for (const saleActivity of saleActivities) {
+      const usedPrefix = `${saleActivity.source || '未知来源'}:`;
       const candidates = catalog
-        .filter((activity) => !used.has(`${activity.campaignId}:${activity.activityId}`) && catalogMatchesSale(activity, saleActivity))
+        .filter((activity) => !used.has(`${usedPrefix}${activity.campaignId}:${activity.activityId}`) && catalogMatchesSale(activity, saleActivity))
         .map((activity) => ({ activity, score: bigramScore(saleActivity.name, `${activity.campaignName || ''} ${activity.activityName || ''}`) }))
         .sort((left, right) => right.score - left.score);
       if (!candidates.length) {
@@ -653,7 +657,7 @@
       const closeCandidates = candidates.filter((candidate) => candidates[0].score - candidate.score < 0.08);
       if (closeCandidates.length === 1) {
         const winner = closeCandidates[0].activity;
-        used.add(`${winner.campaignId}:${winner.activityId}`);
+        used.add(`${usedPrefix}${winner.campaignId}:${winner.activityId}`);
         matched.push({ saleActivity, activity: winner });
         continue;
       }
@@ -669,7 +673,7 @@
         continue;
       }
       for (const activity of verified) {
-        used.add(`${activity.campaignId}:${activity.activityId}`);
+        used.add(`${usedPrefix}${activity.campaignId}:${activity.activityId}`);
         matched.push({ saleActivity, activity });
       }
       verifiedMatchCount += verified.length;
