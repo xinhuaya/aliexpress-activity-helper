@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.8.8
+// @version      0.8.9
 // @description  速卖通活动助手：按商品 ID 读取商品管理 SALE 数据中的报名活动，并按页面按钮流程一键普通退出。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
@@ -24,7 +24,7 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.8.8';
+  const SCRIPT_VERSION = '0.8.9';
   const STOCKOUT_REASON = '库存不足';
   const REQUEST_TIMEOUT_MS = 20000;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -961,21 +961,41 @@
     return `没有找到“支持商品ID搜索”输入框。请确认已进入正确活动页面，并手动点击${step}，再进入“商品报名 > 已报名”后重试。`;
   }
 
+  function usesUnifiedInboundEntry(row) {
+    return Boolean(
+      row &&
+      row.saleSource === '平台活动' &&
+      activityKind(row.activityName) === '入围' &&
+      activityKind(row.catalogActivityName) === '外围'
+    );
+  }
+
   async function enterActivitySignupStep(row) {
+    const unifiedInboundEntry = usesUnifiedInboundEntry(row);
     let input = findActivityProductSearchInput();
-    if (input) return input;
+    if (input && !unifiedInboundEntry) return input;
     const preferredStep = row && row.saleSource === '平台活动' ? '入围活动报名' : '外围活动报名';
-    const actions = [
-      { label: '商品报名', click: () => clickExactInteractive('商品报名') },
+    const productAction = { label: '商品报名', click: () => clickExactInteractive('商品报名') };
+    const preferredAction = {
+      label: preferredStep,
+      click: () => clickExactInteractive(preferredStep),
+      navigationOnly: unifiedInboundEntry
+    };
+    const standardActions = [
+      productAction,
       { label: '开始报名活动商品', click: () => clickExactButton('开始报名活动商品') },
       { label: '同意并下一步', click: () => clickButtonStartingWith('同意并下一步') },
-      { label: preferredStep, click: () => clickExactInteractive(preferredStep) }
+      preferredAction
     ];
+    const actions = unifiedInboundEntry
+      ? [preferredAction, ...standardActions, productAction]
+      : standardActions;
     for (const action of actions) {
       if (!action.click()) continue;
       log('ok', `正在进入“${action.label}”页面。`);
-      await wait(1200);
+      await wait(action.navigationOnly ? 2500 : 1200);
       await dismissBlockingPopups();
+      if (action.navigationOnly) continue;
       input = await waitForActivityProductSearchInput(7000);
       if (input) return input;
     }
@@ -1081,7 +1101,8 @@
     try {
       await waitForMtop();
       await dismissBlockingPopups();
-      const before = await querySignedItem(row, productId);
+      const unifiedInboundEntry = usesUnifiedInboundEntry(row);
+      const before = unifiedInboundEntry ? null : await querySignedItem(row, productId);
       if (before && before.itemStatus === 'OPERATOR_EXIT') {
         state.exitQueue.shift();
         if (state.exitBatch) {
@@ -1090,6 +1111,9 @@
         save();
         log('ok', `已是退出状态：${row.activityName || row.activityId}`);
         return;
+      }
+      if (unifiedInboundEntry) {
+        log('ok', '检测到外围与入围共用报名入口；将进入“入围活动报名”核对，不使用外围退出状态跳过。');
       }
 
       await openSignedListAndSearch(row, productId);

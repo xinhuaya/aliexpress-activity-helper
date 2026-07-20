@@ -16,7 +16,7 @@ class FixedDate extends Date {
 }
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.8\.8/);
+assert.match(metadata, /@version\s+0\.8\.9/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
 assert.match(metadata, /@noframes/);
@@ -150,7 +150,7 @@ async function runCompletionNoticeScenario() {
     completionNotice: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.8.8'
+    scriptVersion: '0.8.9'
   }));
 
   const completionDocument = {
@@ -520,16 +520,26 @@ await runScan(errorScenario);
 assert.doesNotMatch(errorScenario.getRoot()?.innerHTML || '', /\[object Object\]/);
 assert.match(errorScenario.getRoot()?.innerHTML || '', /渠道编号错误/);
 
-async function runExitEntryScenario(entryLabel, expectNavigation = true, saleSource = '店铺活动') {
+async function runExitEntryScenario(
+  entryLabel,
+  expectNavigation = true,
+  saleSource = '店铺活动',
+  signedItemStatus = '',
+  catalogActivityName = '',
+  includeProductTab = false,
+  initialSearchInput = false
+) {
   const productId = '1005000000000002';
   const campaignId = '64600';
   const activityId = '30000211756';
   const storage = new Map();
   const handlers = {};
   let root;
-  let signupVisible = false;
+  let signupVisible = initialSearchInput;
   let entryClicks = 0;
+  let productTabClicks = 0;
   let registeredClicks = 0;
+  const clickOrder = [];
 
   class FakeInput {
     constructor() {
@@ -569,6 +579,12 @@ async function runExitEntryScenario(entryLabel, expectNavigation = true, saleSou
   });
   const entry = makeInteractive(entryLabel, () => {
     entryClicks += 1;
+    clickOrder.push(entryLabel);
+    if (!includeProductTab) signupVisible = true;
+  });
+  const productTab = makeInteractive('商品报名', () => {
+    productTabClicks += 1;
+    clickOrder.push('商品报名');
     signupVisible = true;
   });
   const registered = makeInteractive('已报名(1)', () => {
@@ -581,6 +597,7 @@ async function runExitEntryScenario(entryLabel, expectNavigation = true, saleSou
     campaignId,
     activityId,
     activityName: saleSource === '平台活动' ? '测试入围活动' : '测试外围活动',
+    catalogActivityName,
     saleSource,
     channelId: '9999999'
   };
@@ -592,7 +609,7 @@ async function runExitEntryScenario(entryLabel, expectNavigation = true, saleSou
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.8.8'
+    scriptVersion: '0.8.9'
   }));
 
   const document = {
@@ -619,7 +636,7 @@ async function runExitEntryScenario(entryLabel, expectNavigation = true, saleSou
       if (selector === 'tr,.next-table-row,.ait-table-row,div') return [];
       if (selector.includes('[role="dialog"]') || selector.includes('[aria-modal="true"]')) return [];
       if (selector.includes('button') || selector.includes('[role="tab"]') || selector.includes('span,div')) {
-        return [entry, registered];
+        return includeProductTab ? [productTab, entry, registered] : [entry, registered];
       }
       return [];
     }
@@ -634,7 +651,8 @@ async function runExitEntryScenario(entryLabel, expectNavigation = true, saleSou
       mtop: {
         request(options) {
           if (options.api === 'mtop.global.campaign.merchants.activity.items.query') {
-            return Promise.resolve({ ret: ['SUCCESS::调用成功'], data: { dataList: [] } });
+            const dataList = signedItemStatus ? [{ itemId: productId, itemStatus: signedItemStatus }] : [];
+            return Promise.resolve({ ret: ['SUCCESS::调用成功'], data: { dataList } });
           }
           return Promise.reject({ ret: ['FAIL::unexpected api'] });
         }
@@ -693,6 +711,10 @@ async function runExitEntryScenario(entryLabel, expectNavigation = true, saleSou
   const html = root?.innerHTML || '';
   if (expectNavigation) {
     assert.equal(entryClicks, 1, `${entryLabel} should be clicked once`);
+    if (includeProductTab) {
+      assert.equal(productTabClicks, 1, 'product signup tab should be clicked after selecting the inbound step');
+      assert.deepEqual(clickOrder.slice(0, 2), [entryLabel, '商品报名']);
+    }
     assert.equal(registeredClicks, 1, 'registered tab should be opened');
     assert.equal(input.value, productId, 'product ID should reach the activity search input');
     assert.match(html, /没有找到商品 1005000000000002 的“申请退出活动”按钮/);
@@ -708,6 +730,7 @@ async function runExitEntryScenario(entryLabel, expectNavigation = true, saleSou
 await runExitEntryScenario('商品报名');
 await runExitEntryScenario('同意并下一步');
 await runExitEntryScenario('入围活动报名', true, '平台活动');
+await runExitEntryScenario('入围活动报名', true, '平台活动', 'OPERATOR_EXIT', '测试外围活动', true, true);
 await runExitEntryScenario('无关按钮', false);
 
 console.log('userscript smoke test passed');
