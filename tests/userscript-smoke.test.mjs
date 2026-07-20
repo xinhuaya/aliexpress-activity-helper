@@ -16,14 +16,14 @@ class FixedDate extends Date {
 }
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.8\.13/);
+assert.match(metadata, /@version\s+0\.9\.0/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
 assert.match(metadata, /@noframes/);
 assert.doesNotMatch(source, /codex/i);
 assert.match(metadata, /@match\s+https:\/\/\*\.aliexpress\.com\/\*/);
 assert.doesNotMatch(source, /channelId=2350569/);
-assert.match(source, /直接读取商品管理中该商品 SALE/);
+assert.match(metadata, /批量读取商品管理 SALE/);
 assert.match(source, /parseSaleTooltip/);
 assert.match(source, /localizeActTime/);
 assert.match(source, /同意并下一步/);
@@ -38,8 +38,13 @@ assert.match(source, /mtop\.global\.merchant\.new\.product\.manager\.render\.lis
 assert.doesNotMatch(source, /mapWithRateLimit/);
 assert.match(source, /baxia-dialog-mask/);
 assert.match(source, /_____tmd_____\/punish/);
-assert.match(source, /活动退出完成/);
+assert.match(source, /批量退出完成/);
 assert.match(source, /商品优化完成后，记得重新报名需要参加的活动/);
+assert.match(source, /const MAX_BATCH_PRODUCTS = 10;/);
+assert.match(source, /function parseProductIds/);
+assert.match(source, /<textarea class="aeaa-input"/);
+assert.match(source, /exitRowKey\(item\) !== exitRowKey\(row\)/);
+assert.match(source, /failedRows/);
 
 const frameWindow = { location: { search: '', pathname: '/', href: 'https://csp.aliexpress.com/' } };
 frameWindow.self = frameWindow;
@@ -135,26 +140,32 @@ assert.equal(mountedRoot?.id, 'aeaa-root');
 assert.match(mountedRoot?.innerHTML || '', /AE 活动助手/);
 
 async function runCompletionNoticeScenario() {
-  const productId = '1005000000000088';
+  const productIds = ['1005000000000088', '1005000000000089'];
   const completionStorage = new Map();
   const completionHandlers = {};
   let completionRoot;
   completionStorage.set('ae.activity.assistant.v4', JSON.stringify({
-    productId,
+    productId: productIds.join('\n'),
     dryRun: false,
     logs: [],
     plan: [],
     exitQueue: [],
     exitBatch: {
-      productId,
+      productId: productIds[0],
+      productIds,
+      productCount: 2,
+      queuedProductCount: 2,
+      skippedProductIds: [],
       total: 4,
       successCount: 3,
-      alreadyExitedCount: 1
+      alreadyExitedCount: 1,
+      failedCount: 0,
+      failedRows: []
     },
     completionNotice: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.8.13'
+    scriptVersion: '0.9.0'
   }));
 
   const completionDocument = {
@@ -221,10 +232,10 @@ async function runCompletionNoticeScenario() {
   for (let index = 0; index < 10; index += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
-  assert.match(completionRoot?.innerHTML || '', /活动退出完成/);
-  assert.match(completionRoot?.innerHTML || '', new RegExp(productId));
+  assert.match(completionRoot?.innerHTML || '', /批量退出完成/);
+  assert.match(completionRoot?.innerHTML || '', /2 个商品的退出队列已全部处理/);
   assert.match(completionRoot?.innerHTML || '', />3<\/span><span class="aeaa-completion-label">退出成功/);
-  assert.match(completionRoot?.innerHTML || '', />1<\/span><span class="aeaa-completion-label">原本已退出/);
+  assert.match(completionRoot?.innerHTML || '', /原本已退出 1/);
 
   completionHandlers.click({
     target: {
@@ -233,7 +244,7 @@ async function runCompletionNoticeScenario() {
       }
     }
   });
-  assert.doesNotMatch(completionRoot?.innerHTML || '', /活动退出完成/);
+  assert.doesNotMatch(completionRoot?.innerHTML || '', /批量退出完成/);
   assert.equal(JSON.parse(completionStorage.get('ae.activity.assistant.v4')).completionNotice, null);
 }
 
@@ -244,11 +255,15 @@ function createSaleScenario({
   ambiguousPlatform = false,
   localizedSecondTime = false,
   unifiedOnly = false,
-  nonInboundDecoy = false
+  nonInboundDecoy = false,
+  productIds: suppliedProductIds = []
 } = {}) {
   const handlers = {};
   const calls = [];
-  const productId = '1005000000000001';
+  const productIds = suppliedProductIds.length
+    ? suppliedProductIds.map(String)
+    : ['1005000000000001'];
+  const productId = productIds[0];
   const startTime = new Date(2026, 6, 15, 23, 0).getTime();
   const endTime = new Date(2026, 6, 20, 14, 59).getTime();
   const saleStartText = localizedSecondTime ? '2026-07-16 00:00' : '2026-07-15 23:00';
@@ -315,12 +330,16 @@ function createSaleScenario({
         request(options) {
           calls.push(options);
           if (options.api === 'mtop.global.merchant.new.product.manager.render.list') {
+            const requestedProductId = String(
+              JSON.parse(options.data.jsonBody).filter.querySelectInput.value || ''
+            );
+            const matchedProductId = productIds.includes(requestedProductId) ? requestedProductId : '';
             return Promise.resolve({
               ret: ['SUCCESS::调用成功'],
               data: {
                 table: {
-                  dataSource: [{
-                    productId,
+                  dataSource: matchedProductId ? [{
+                    productId: matchedProductId,
                     itemDesc: {
                       iconList: [{
                         uiType: 'hoverTip',
@@ -338,7 +357,7 @@ function createSaleScenario({
                         }]
                       }]
                     }
-                  }]
+                  }] : []
                 }
               }
             });
@@ -348,7 +367,10 @@ function createSaleScenario({
             return Promise.resolve({
               ret: ['SUCCESS::调用成功'],
               data: {
-                dataList: isSignedPlatformActivity ? [{ itemId: productId, itemStatus: 'AUDIT_PASSED' }] : []
+                dataList: isSignedPlatformActivity ? [{
+                  itemId: String(options.data.nameOrId || productId),
+                  itemStatus: 'AUDIT_PASSED'
+                }] : []
               }
             });
           }
@@ -460,11 +482,11 @@ function createSaleScenario({
     }
   });
 
-  return { handlers, calls, getRoot: () => root, productId };
+  return { handlers, calls, getRoot: () => root, productId, productIds };
 }
 
-async function runScan(scenario) {
-  scenario.handlers.input({ target: { dataset: { field: 'product' }, value: scenario.productId } });
+async function runScan(scenario, inputValue = scenario.productId) {
+  scenario.handlers.input({ target: { dataset: { field: 'product' }, value: inputValue } });
   scenario.handlers.click({
     target: {
       closest() {
@@ -472,7 +494,7 @@ async function runScan(scenario) {
       }
     }
   });
-  for (let index = 0; index < 30; index += 1) {
+  for (let index = 0; index < 80; index += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
@@ -489,8 +511,35 @@ assert.match(saleScenario.getRoot()?.innerHTML || '', /外围活动-非俄语区
 assert.match(saleScenario.getRoot()?.innerHTML || '', /30000211726/);
 assert.match(saleScenario.getRoot()?.innerHTML || '', /入围活动-非俄语区&amp;欧盟地区/);
 assert.match(saleScenario.getRoot()?.innerHTML || '', /30000211727/);
-assert.match(saleScenario.getRoot()?.innerHTML || '', /保留全部 2 条平台和店铺活动/);
-assert.match(saleScenario.getRoot()?.innerHTML || '', /没有遍历全店活动/);
+assert.match(saleScenario.getRoot()?.innerHTML || '', /保留 2 条未结束活动（平台 1，店铺 1）/);
+assert.match(saleScenario.getRoot()?.innerHTML || '', /批量核对完成：1\/1 个商品有可处理活动，共 2 个活动/);
+
+const batchProductIds = ['1005000000000001', '1005000000000002'];
+const batchScenario = createSaleScenario({ productIds: batchProductIds });
+await runScan(batchScenario, `${batchProductIds[0]}\n${batchProductIds[1]}，${batchProductIds[0]}`);
+const batchProductQueries = batchScenario.calls
+  .filter((call) => call.api === 'mtop.global.merchant.new.product.manager.render.list');
+assert.equal(batchProductQueries.length, 2);
+assert.deepEqual(
+  batchProductQueries.map((call) => JSON.parse(call.data.jsonBody).filter.querySelectInput.value),
+  batchProductIds
+);
+assert.equal(
+  batchScenario.calls.filter((call) => call.api === 'mtop.global.campaign.merchants.activity.list.nodada.data').length,
+  3
+);
+assert.match(batchScenario.getRoot()?.innerHTML || '', new RegExp(batchProductIds[0]));
+assert.match(batchScenario.getRoot()?.innerHTML || '', new RegExp(batchProductIds[1]));
+assert.match(batchScenario.getRoot()?.innerHTML || '', /批量核对完成：2\/2 个商品有可处理活动，共 4 个活动/);
+
+const tooManyScenario = createSaleScenario();
+const tooManyProductIds = Array.from({ length: 11 }, (_, index) => `100500000000${String(index).padStart(4, '0')}`);
+await runScan(tooManyScenario, tooManyProductIds.join('\n'));
+assert.equal(
+  tooManyScenario.calls.filter((call) => call.api === 'mtop.global.merchant.new.product.manager.render.list').length,
+  0
+);
+assert.match(tooManyScenario.getRoot()?.innerHTML || '', /一次最多处理 10 个商品 ID/);
 
 const ambiguousScenario = createSaleScenario({ ambiguousPlatform: true });
 await runScan(ambiguousScenario);
@@ -500,7 +549,7 @@ assert.equal(verificationCalls.length, 2);
 assert.match(ambiguousScenario.getRoot()?.innerHTML || '', /30000211726/);
 assert.match(ambiguousScenario.getRoot()?.innerHTML || '', /30000211727/);
 assert.doesNotMatch(ambiguousScenario.getRoot()?.innerHTML || '', /30000211729/);
-assert.match(ambiguousScenario.getRoot()?.innerHTML || '', /按商品实际报名记录确认 1 个活动编号/);
+assert.match(ambiguousScenario.getRoot()?.innerHTML || '', /已核对 2 个候选，确认 1 个活动编号/);
 
 const localizedScenario = createSaleScenario({ localizedSecondTime: true });
 await runScan(localizedScenario);
@@ -613,7 +662,7 @@ async function runExitEntryScenario(
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.8.13'
+    scriptVersion: '0.9.0'
   }));
 
   const document = {
@@ -735,6 +784,201 @@ await runExitEntryScenario('商品报名');
 await runExitEntryScenario('同意并下一步');
 await runExitEntryScenario('入围活动报名', true, '平台活动');
 await runExitEntryScenario('无关按钮', false);
+
+async function runBatchFailureContinuationScenario() {
+  const productIds = ['1005000000000011', '1005000000000012'];
+  const campaignId = '64600';
+  const activityId = '30000211756';
+  const storage = new Map();
+  const handlers = {};
+  const searchedProductIds = [];
+  let root;
+  let registeredClicks = 0;
+
+  class FakeInput {
+    constructor() {
+      this.placeholder = '支持商品ID搜索';
+      this.currentValue = '';
+    }
+    focus() {}
+    dispatchEvent() {
+      return true;
+    }
+    getBoundingClientRect() {
+      return { width: 240, height: 32 };
+    }
+  }
+  Object.defineProperty(FakeInput.prototype, 'value', {
+    get() {
+      return this.currentValue;
+    },
+    set(value) {
+      this.currentValue = value;
+      searchedProductIds.push(value);
+    }
+  });
+  const input = new FakeInput();
+  const registered = {
+    innerText: '已报名(2)',
+    textContent: '已报名(2)',
+    click() {
+      registeredClicks += 1;
+    },
+    closest() {
+      return this;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    getBoundingClientRect() {
+      return { width: 120, height: 32 };
+    }
+  };
+  const rows = productIds.map((productId) => ({
+    productId,
+    itemId: productId,
+    campaignId,
+    activityId,
+    activityName: '测试批量外围活动',
+    catalogActivityName: '测试批量外围活动',
+    saleSource: '店铺活动',
+    channelId: '9999999'
+  }));
+  storage.set('ae.activity.assistant.v4', JSON.stringify({
+    productId: productIds.join('\n'),
+    dryRun: false,
+    logs: [],
+    plan: rows,
+    scanProductIds: productIds,
+    scanResults: productIds.map((productId) => ({ productId, status: 'ready', activityCount: 1 })),
+    exitQueue: rows,
+    exitBatch: {
+      productId: productIds[0],
+      productIds,
+      productCount: 2,
+      queuedProductCount: 2,
+      skippedProductIds: [],
+      total: 2,
+      successCount: 0,
+      alreadyExitedCount: 0,
+      failedCount: 0,
+      failedRows: []
+    },
+    autoExit: true,
+    channelId: '9999999',
+    scriptVersion: '0.9.0'
+  }));
+
+  const document = {
+    readyState: 'complete',
+    title: '活动报名',
+    body: { innerText: '大促活动指南 外围活动报名' },
+    documentElement: {
+      appendChild(node) {
+        root = node;
+      }
+    },
+    getElementById() {
+      return null;
+    },
+    createElement() {
+      return createRoot((node) => { root = node; }, handlers);
+    },
+    addEventListener() {},
+    querySelector() {
+      return null;
+    },
+    querySelectorAll(selector) {
+      if (selector === 'input') return [input];
+      if (selector === 'tr,.next-table-row,.ait-table-row,div') return [];
+      if (selector.includes('[role="dialog"]') || selector.includes('[aria-modal="true"]')) return [];
+      if (selector.includes('button') || selector.includes('[role="tab"]') || selector.includes('span,div')) {
+        return [registered];
+      }
+      return [];
+    }
+  };
+  const window = {
+    location: {
+      search: `?campaignId=${campaignId}&activityId=${activityId}&channelId=9999999`,
+      pathname: '/m_apps/campaigns/peripheral-activity',
+      href: `https://csp.aliexpress.com/m_apps/campaigns/peripheral-activity?campaignId=${campaignId}&activityId=${activityId}&channelId=9999999`
+    },
+    lib: {
+      mtop: {
+        request(options) {
+          if (options.api === 'mtop.global.campaign.merchants.activity.items.query') {
+            return Promise.resolve({ ret: ['SUCCESS::调用成功'], data: { dataList: [] } });
+          }
+          return Promise.reject({ ret: ['FAIL::unexpected api'] });
+        }
+      }
+    }
+  };
+  window.self = window;
+  window.top = window;
+
+  class FakeEvent {
+    constructor(type, options) {
+      this.type = type;
+      this.options = options;
+    }
+  }
+
+  vm.runInNewContext(source, {
+    console,
+    Date: FixedDate,
+    Error,
+    JSON,
+    Map,
+    Promise,
+    URLSearchParams,
+    document,
+    window,
+    HTMLInputElement: FakeInput,
+    Event: FakeEvent,
+    KeyboardEvent: FakeEvent,
+    localStorage: {
+      getItem(key) {
+        return storage.get(key) ?? null;
+      },
+      setItem(key, value) {
+        storage.set(key, value);
+      }
+    },
+    getComputedStyle() {
+      return { display: 'block', visibility: 'visible' };
+    },
+    setInterval(callback) {
+      queueMicrotask(callback);
+      return 1;
+    },
+    clearInterval() {},
+    clearTimeout() {},
+    setTimeout(callback, ms) {
+      if (ms < 20000) queueMicrotask(callback);
+      return 1;
+    }
+  });
+
+  for (let index = 0; index < 160; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  const savedState = JSON.parse(storage.get('ae.activity.assistant.v4'));
+  assert.deepEqual(searchedProductIds, productIds);
+  assert.equal(registeredClicks, 2);
+  assert.equal(savedState.autoExit, false);
+  assert.equal(savedState.exitQueue.length, 0);
+  assert.equal(savedState.completionNotice.failedCount, 2);
+  assert.deepEqual(savedState.completionNotice.failedRows.map((row) => row.productId), productIds);
+  assert.match(root?.innerHTML || '', /批量退出完成/);
+  assert.match(root?.innerHTML || '', /处理失败 2/);
+  assert.match(root?.innerHTML || '', new RegExp(productIds[0]));
+  assert.match(root?.innerHTML || '', new RegExp(productIds[1]));
+}
+
+await runBatchFailureContinuationScenario();
 
 async function runUnifiedSequentialEntryScenario() {
   const productId = '1005000000000099';
@@ -866,7 +1110,7 @@ async function runUnifiedSequentialEntryScenario() {
     exitFlow: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.8.13'
+    scriptVersion: '0.9.0'
   }));
 
   const document = {

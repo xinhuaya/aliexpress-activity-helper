@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.8.13
-// @description  速卖通活动助手：按商品 ID 读取商品管理 SALE 数据中的报名活动，并按页面按钮流程一键普通退出。
+// @version      0.9.0
+// @description  速卖通活动助手：批量读取商品管理 SALE 数据中的报名活动，并按页面按钮流程一键普通退出。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
 // @updateURL    https://xinhuaya.github.io/aliexpress-activity-helper/stable/aliexpress-activity-helper.meta.js
@@ -24,7 +24,8 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.8.13';
+  const SCRIPT_VERSION = '0.9.0';
+  const MAX_BATCH_PRODUCTS = 10;
   const UNIFIED_NAVIGATION_TIMEOUT = 45000;
   const UNIFIED_BUTTON_STABLE_MS = 4000;
   const STOCKOUT_REASON = '库存不足';
@@ -38,6 +39,8 @@
     busy: false,
     logs: [],
     plan: [],
+    scanProductIds: [],
+    scanResults: [],
     exitQueue: [],
     exitBatch: null,
     exitFlow: null,
@@ -53,6 +56,8 @@
   if (upgradedFromOldVersion) {
     state.logs = [];
     state.plan = [];
+    state.scanProductIds = [];
+    state.scanResults = [];
     state.exitQueue = [];
     state.exitBatch = null;
     state.exitFlow = null;
@@ -79,6 +84,8 @@
       dryRun: state.dryRun,
       logs: state.logs.slice(0, 40),
       plan: state.plan,
+      scanProductIds: state.scanProductIds,
+      scanResults: state.scanResults,
       exitQueue: state.exitQueue,
       exitBatch: state.exitBatch,
       exitFlow: state.exitFlow,
@@ -180,6 +187,41 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  function parseProductIds(value = state.productId) {
+    const seen = new Set();
+    return String(value || '')
+      .split(/[\s,，;；]+/)
+      .map((item) => item.trim())
+      .filter((item) => {
+        if (!item || seen.has(item)) return false;
+        seen.add(item);
+        return true;
+      });
+  }
+
+  function validatedProductIds() {
+    const productIds = parseProductIds();
+    if (!productIds.length) {
+      log('warn', '请先输入至少一个商品 ID。');
+      return [];
+    }
+    if (productIds.length > MAX_BATCH_PRODUCTS) {
+      log('warn', `一次最多处理 ${MAX_BATCH_PRODUCTS} 个商品 ID，当前输入了 ${productIds.length} 个。`);
+      return [];
+    }
+    const invalid = productIds.filter((productId) => !/^\d{10,20}$/.test(productId));
+    if (invalid.length) {
+      log('warn', `以下商品 ID 格式不正确：${invalid.join('、')}`);
+      return [];
+    }
+    return productIds;
+  }
+
+  function sameProductIds(left, right) {
+    if (!Array.isArray(left) || left.length !== right.length) return false;
+    return left.every((item, index) => String(item) === String(right[index]));
   }
 
   function log(level, message) {
@@ -729,90 +771,153 @@
   }
 
   async function buildPlan() {
-    const productId = String(state.productId || '').trim();
-    if (!productId) {
-      log('warn', '请先输入商品 ID。');
-      return;
-    }
+    const productIds = validatedProductIds();
+    if (!productIds.length) return false;
+    state.productId = productIds.join('\n');
     state.plan = [];
+    state.scanProductIds = productIds.slice();
+    state.scanResults = [];
     save();
     render();
 
     setBusy(true);
+    const plan = [];
+    const scanResults = [];
+    let catalog = null;
     try {
-      log('ok', `正在按商品 ID ${productId} 读取商品管理 SALE 数据。`);
-      const saleActivities = await queryProductSaleActivities(productId);
-      if (!saleActivities.length) {
-        state.plan = [];
-        save();
-        log('warn', `商品 ${productId} 没有 SALE 活动标志，当前没有可生成的退出计划。`);
-        return;
-      }
-      const activeSaleActivities = saleActivities.filter((item) => {
-        const end = new Date(item.end.replace(/-/g, '/')).getTime();
-        return !end || end >= Date.now();
-      });
-      const exitEntries = activeSaleActivities;
-      const platformCount = exitEntries.filter((item) => item.source === '平台活动').length;
-      const shopCount = exitEntries.filter((item) => item.source === '店铺活动').length;
-      log('ok', `SALE 显示 ${saleActivities.length} 条活动记录；未结束记录中保留全部 ${exitEntries.length} 条平台和店铺活动（平台 ${platformCount}，店铺 ${shopCount}），正在分别匹配活动编号。`);
+      for (let index = 0; index < productIds.length; index += 1) {
+        const productId = productIds[index];
+        log('ok', `正在扫描第 ${index + 1}/${productIds.length} 个商品：${productId}`);
+        try {
+          const saleActivities = await queryProductSaleActivities(productId);
+          if (!saleActivities.length) {
+            scanResults.push({
+              productId,
+              status: 'no_activity',
+              activityCount: 0,
+              platformCount: 0,
+              shopCount: 0,
+              message: '没有 SALE 活动标志'
+            });
+            state.scanResults = scanResults.slice();
+            save();
+            log('warn', `商品 ${productId} 没有 SALE 活动标志，已跳过。`);
+            continue;
+          }
 
-      const catalog = (await resolveActivities()).filter((item) => !isEnded(item));
-      const { matched, unresolved, verifiedCandidateCount, verifiedMatchCount } = await matchSaleActivities(exitEntries, catalog, productId);
-      if (verifiedCandidateCount) {
-        log('ok', `活动名称存在相近候选；已核对 ${verifiedCandidateCount} 个候选，并按商品实际报名记录确认 ${verifiedMatchCount} 个活动编号。`);
-      }
-      if (unresolved.length) {
-        const preview = unresolved.slice(0, 3).map((item) => item.name).join('；');
-        throw new Error(`SALE 中有 ${unresolved.length} 个活动无法唯一匹配活动编号，已停止以避免漏退或错退：${preview}`);
-      }
+          const exitEntries = saleActivities.filter((item) => {
+            const end = new Date(item.end.replace(/-/g, '/')).getTime();
+            return !end || end >= Date.now();
+          });
+          const platformCount = exitEntries.filter((item) => item.source === '平台活动').length;
+          const shopCount = exitEntries.filter((item) => item.source === '店铺活动').length;
+          log('ok', `商品 ${productId} 的 SALE 显示 ${saleActivities.length} 条活动；保留 ${exitEntries.length} 条未结束活动（平台 ${platformCount}，店铺 ${shopCount}）。`);
 
-      const plan = matched.map(({ saleActivity, activity }) => ({
-        productId,
-        itemId: productId,
-        itemName: '',
-        campaignId: activity.campaignId,
-        activityId: activity.activityId,
-        activityName: saleActivity.name,
-        catalogActivityName: activity.activityName,
-        groupName: saleActivity.source,
-        saleSource: saleActivity.source,
-        activityStartTime: activity.activityStartTime,
-        activityEndTime: activity.activityEndTime,
-        showStartTime: activity.showStartTime,
-        channelId: activity.channelId || getChannelId(),
-        juId: '',
-        signRecordId: '',
-        itemStatus: 'SALE_VISIBLE',
-        stock: ''
-      }));
+          if (!exitEntries.length) {
+            scanResults.push({
+              productId,
+              status: 'no_activity',
+              activityCount: 0,
+              platformCount,
+              shopCount,
+              message: '没有未结束活动'
+            });
+            state.scanResults = scanResults.slice();
+            save();
+            log('warn', `商品 ${productId} 的 SALE 中没有未结束活动，已跳过。`);
+            continue;
+          }
+
+          if (!catalog) catalog = (await resolveActivities()).filter((item) => !isEnded(item));
+          const { matched, unresolved, verifiedCandidateCount, verifiedMatchCount } = await matchSaleActivities(exitEntries, catalog, productId);
+          if (verifiedCandidateCount) {
+            log('ok', `商品 ${productId} 有相近活动名称；已核对 ${verifiedCandidateCount} 个候选，确认 ${verifiedMatchCount} 个活动编号。`);
+          }
+          if (unresolved.length) {
+            const preview = unresolved.slice(0, 3).map((item) => item.name).join('；');
+            throw new Error(`有 ${unresolved.length} 个 SALE 活动无法唯一匹配活动编号：${preview}`);
+          }
+
+          const rows = matched.map(({ saleActivity, activity }) => ({
+            productId,
+            itemId: productId,
+            itemName: '',
+            campaignId: activity.campaignId,
+            activityId: activity.activityId,
+            activityName: saleActivity.name,
+            catalogActivityName: activity.activityName,
+            groupName: saleActivity.source,
+            saleSource: saleActivity.source,
+            activityStartTime: activity.activityStartTime,
+            activityEndTime: activity.activityEndTime,
+            showStartTime: activity.showStartTime,
+            channelId: activity.channelId || getChannelId(),
+            juId: '',
+            signRecordId: '',
+            itemStatus: 'SALE_VISIBLE',
+            stock: ''
+          }));
+          plan.push(...rows);
+          scanResults.push({
+            productId,
+            status: 'ready',
+            activityCount: rows.length,
+            platformCount,
+            shopCount,
+            message: `${rows.length} 个活动待处理`
+          });
+          state.plan = plan.slice();
+          state.scanResults = scanResults.slice();
+          save();
+          log('ok', `商品 ${productId} 核对完成：${rows.length} 个活动可处理。`);
+        } catch (error) {
+          if (error && error.code === 'AE_SECURITY_CHALLENGE') throw error;
+          const message = formatError(error);
+          scanResults.push({
+            productId,
+            status: 'error',
+            activityCount: 0,
+            platformCount: 0,
+            shopCount: 0,
+            message
+          });
+          state.plan = plan.slice();
+          state.scanResults = scanResults.slice();
+          save();
+          log('error', `商品 ${productId} 扫描失败，已跳过：${message}`);
+        }
+      }
 
       state.plan = plan;
+      state.scanProductIds = productIds.slice();
+      state.scanResults = scanResults;
       state.lastScanAt = new Date().toLocaleString();
       save();
-      if (plan.length) {
-        log('ok', `SALE 核对完成：商品 ${productId} 有 ${plan.length} 个可处理报名活动；没有遍历全店活动。当前是${state.dryRun ? '预演' : '执行'}模式。`);
-      } else {
-        log('warn', `商品 ${productId} 的 SALE 中没有未结束活动。`);
-      }
+      const readyCount = scanResults.filter((item) => item.status === 'ready').length;
+      const skippedCount = scanResults.length - readyCount;
+      log(plan.length ? 'ok' : 'warn', `批量核对完成：${readyCount}/${productIds.length} 个商品有可处理活动，共 ${plan.length} 个活动${skippedCount ? `；${skippedCount} 个商品无活动或扫描失败` : ''}。当前是${state.dryRun ? '预演' : '执行'}模式。`);
+      return true;
     } catch (error) {
+      state.plan = [];
+      state.scanProductIds = [];
+      state.scanResults = scanResults;
+      save();
       log('error', formatError(error));
+      return false;
     } finally {
       setBusy(false);
     }
   }
 
   async function exitPlan() {
-    const productId = String(state.productId || '').trim();
-    if (!productId) {
-      log('warn', '请先输入商品 ID。');
-      return;
+    const productIds = validatedProductIds();
+    if (!productIds.length) return;
+    if (!sameProductIds(state.scanProductIds, productIds)) {
+      const scanned = await buildPlan();
+      if (!scanned) return;
     }
-    if (!state.plan.length || state.plan.some((row) => row.productId !== productId)) {
-      await buildPlan();
-    }
-    if (!state.plan.length || state.plan.some((row) => row.productId !== productId)) {
-      log('error', `没有为商品 ${productId} 生成可执行的退出计划，已停止。`);
+    if (!state.plan.length) {
+      log('error', '这些商品没有可执行的退出计划，已停止。');
       return;
     }
 
@@ -821,11 +926,19 @@
       return;
     }
 
-    const names = state.plan.map((row) => `- ${row.activityName}`).join('\n');
+    const summary = productIds.map((productId) => {
+      const count = state.plan.filter((row) => String(row.productId) === productId).length;
+      const result = state.scanResults.find((item) => String(item.productId) === productId);
+      if (count) return `- ${productId}：${count} 个活动`;
+      return `- ${productId}：${result && result.status === 'error' ? '扫描失败，将跳过' : '没有未结束活动'}`;
+    }).join('\n');
+    const queuedProductIds = [...new Set(state.plan.map((row) => String(row.productId || '')))].filter(Boolean);
+    const skippedProductIds = productIds.filter((productId) => !queuedProductIds.includes(productId));
     const ok = window.confirm(
-      `确认普通退出商品 ${productId} 的 ${state.plan.length} 个活动吗？\n\n` +
-      `${names}\n\n` +
+      `确认普通退出 ${queuedProductIds.length} 个商品的 ${state.plan.length} 个活动吗？\n\n` +
+      `${summary}\n\n` +
       '退出原因：库存不足\n' +
+      '单个活动失败会记录并继续；遇到安全验证会停止。\n' +
       '本脚本不会设置为“不参加活动商品”。'
     );
     if (!ok) {
@@ -835,17 +948,23 @@
 
     state.exitQueue = state.plan.slice();
     state.exitBatch = {
-      productId,
+      productId: productIds[0] || '',
+      productIds,
+      productCount: productIds.length,
+      queuedProductCount: queuedProductIds.length,
+      skippedProductIds,
       total: state.exitQueue.length,
       successCount: 0,
       alreadyExitedCount: 0,
+      failedCount: 0,
+      failedRows: [],
       startedAt: new Date().toISOString()
     };
     state.exitFlow = null;
     state.completionNotice = null;
     state.autoExit = true;
     save();
-    log('ok', `已创建退出队列：${state.exitQueue.length} 个活动。`);
+    log('ok', `已创建批量退出队列：${queuedProductIds.length} 个商品，共 ${state.exitQueue.length} 个活动。`);
     processExitQueue();
   }
 
@@ -1262,24 +1381,41 @@
     await wait(7000);
   }
 
+  function createBatchCompletionNotice(batch, extra = {}) {
+    const productIds = Array.isArray(batch.productIds) && batch.productIds.length
+      ? batch.productIds.map(String)
+      : parseProductIds(batch.productId || state.productId);
+    const successCount = Number(batch.successCount) || 0;
+    const alreadyExitedCount = Number(batch.alreadyExitedCount) || 0;
+    const failedCount = Number(batch.failedCount) || 0;
+    return {
+      productId: productIds[0] || '',
+      productIds,
+      productCount: Number(batch.productCount) || productIds.length,
+      queuedProductCount: Number(batch.queuedProductCount) || productIds.length,
+      skippedProductIds: Array.isArray(batch.skippedProductIds) ? batch.skippedProductIds.map(String) : [],
+      total: Number(batch.total) || successCount + alreadyExitedCount + failedCount,
+      successCount,
+      alreadyExitedCount,
+      failedCount,
+      failedRows: Array.isArray(batch.failedRows) ? batch.failedRows.slice() : [],
+      completedAt: new Date().toISOString(),
+      ...extra
+    };
+  }
+
   async function processExitQueue() {
     if (!state.autoExit || state.busy) return;
     if (!state.exitQueue.length) {
       const batch = state.exitBatch && typeof state.exitBatch === 'object' ? state.exitBatch : {};
-      const successCount = Number(batch.successCount) || 0;
-      const alreadyExitedCount = Number(batch.alreadyExitedCount) || 0;
-      const total = Number(batch.total) || successCount + alreadyExitedCount;
       state.autoExit = false;
-      state.completionNotice = {
-        productId: String(batch.productId || state.productId || ''),
-        total,
-        successCount,
-        alreadyExitedCount,
-        completedAt: new Date().toISOString()
-      };
+      state.completionNotice = createBatchCompletionNotice(batch);
       state.exitBatch = null;
       state.exitFlow = null;
-      log('ok', `退出队列已完成：共处理 ${total} 个活动。请刷新商品管理页复查。`);
+      state.plan = [];
+      state.scanProductIds = [];
+      state.scanResults = [];
+      log('ok', `批量退出队列已完成：${state.completionNotice.productCount} 个商品，共 ${state.completionNotice.total} 个活动。请刷新商品管理页复查。`);
       return;
     }
 
@@ -1320,6 +1456,7 @@
         if (state.exitBatch) {
           state.exitBatch.alreadyExitedCount = (Number(state.exitBatch.alreadyExitedCount) || 0) + 1;
         }
+        state.plan = state.plan.filter((item) => exitRowKey(item) !== exitRowKey(row));
         clearExitFlow(row);
         save();
         log('ok', `已是退出状态：${row.activityName || row.activityId}`);
@@ -1335,19 +1472,45 @@
         if (state.exitBatch) {
           state.exitBatch.successCount = (Number(state.exitBatch.successCount) || 0) + 1;
         }
-        state.plan = state.plan.filter((item) => item.activityId !== row.activityId);
+        state.plan = state.plan.filter((item) => exitRowKey(item) !== exitRowKey(row));
         clearExitFlow(row);
         save();
         log('ok', `退出成功：${row.activityName || row.activityId}`);
       } else {
-        state.autoExit = false;
-        save();
-        log('error', `提交后没有查到退出状态：${row.activityName || row.activityId}`);
+        throw new Error(`提交后没有查到退出状态：${row.activityName || row.activityId}`);
       }
     } catch (error) {
-      state.autoExit = false;
-      save();
-      log('error', `退出队列停止：${formatError(error)}`);
+      const message = formatError(error);
+      if (error && error.code === 'AE_SECURITY_CHALLENGE') {
+        const batch = state.exitBatch && typeof state.exitBatch === 'object' ? state.exitBatch : {};
+        state.autoExit = false;
+        state.exitQueue = [];
+        state.exitFlow = null;
+        state.completionNotice = createBatchCompletionNotice(batch, {
+          stopped: true,
+          stoppedReason: message
+        });
+        state.exitBatch = null;
+        state.plan = [];
+        state.scanProductIds = [];
+        state.scanResults = [];
+        save();
+        log('error', `批量退出已暂停：${message}`);
+      } else {
+        state.exitQueue.shift();
+        if (state.exitBatch) {
+          state.exitBatch.failedCount = (Number(state.exitBatch.failedCount) || 0) + 1;
+          if (!Array.isArray(state.exitBatch.failedRows)) state.exitBatch.failedRows = [];
+          state.exitBatch.failedRows.push({
+            productId,
+            activityName: String(row.activityName || row.activityId || ''),
+            message
+          });
+        }
+        clearExitFlow(row);
+        save();
+        log('error', `商品 ${productId} 的活动处理失败，已记录并继续：${message}`);
+      }
     } finally {
       setBusy(false);
       if (state.autoExit) setTimeout(processExitQueue, 1200);
@@ -1356,14 +1519,15 @@
 
   function css() {
     return `
-      #aeaa-root { position: fixed; right: 18px; bottom: 18px; width: 430px; z-index: 2147483647; color: #17231f; font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+      #aeaa-root { position: fixed; right: 18px; bottom: 18px; width: min(470px, calc(100vw - 24px)); z-index: 2147483647; color: #17231f; font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
       #aeaa-root * { box-sizing: border-box; letter-spacing: 0; }
       .aeaa-box { border: 1px solid #2b3b36; background: #fbfaf6; box-shadow: 0 18px 50px rgba(0,0,0,.24); border-radius: 8px; overflow: hidden; }
       .aeaa-head { min-height: 42px; background: #20352f; color: #f7f4ea; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 12px; font-weight: 700; }
       .aeaa-head small { color: #a8d7bd; font-weight: 500; }
       .aeaa-body { padding: 12px; }
       .aeaa-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
-      .aeaa-input { flex: 1; min-width: 0; height: 34px; border: 1px solid #a9b4aa; border-radius: 6px; background: #fff; padding: 0 10px; font-size: 13px; }
+      .aeaa-input { width: 100%; min-width: 0; min-height: 68px; max-height: 150px; resize: vertical; border: 1px solid #a9b4aa; border-radius: 6px; background: #fff; padding: 8px 10px; font: 13px/1.45 "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
+      .aeaa-actions .aeaa-btn { flex: 1; }
       .aeaa-btn { height: 34px; border: 1px solid #243b34; border-radius: 6px; background: #273d36; color: white; font-weight: 700; cursor: pointer; white-space: nowrap; padding: 0 12px; }
       .aeaa-btn.secondary { background: #fff; color: #1c2d28; border-color: #a9b4aa; }
       .aeaa-btn.danger { background: #b42318; border-color: #9b1c13; }
@@ -1371,7 +1535,10 @@
       .aeaa-options { display: flex; margin-bottom: 8px; }
       .aeaa-toggle { flex: 1; height: 30px; border: 1px solid #d0c8ba; border-radius: 6px; background: #fff; display:flex; align-items:center; justify-content:center; gap:6px; font-size:12px; font-weight:700; }
       .aeaa-note { margin: 0 0 8px; color: #56645d; font-size: 12px; line-height: 1.45; }
-      .aeaa-plan { max-height: 172px; overflow: auto; border: 1px solid #d0c8ba; border-radius: 6px; background: #fff; font-size: 12px; margin-top: 8px; }
+      .aeaa-plan { max-height: 230px; overflow: auto; border: 1px solid #d0c8ba; border-radius: 6px; background: #fff; font-size: 12px; margin-top: 8px; }
+      .aeaa-product-head { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; background: #edf3ef; color: #17231f; font-weight: 800; border-bottom: 1px solid #d8ded9; }
+      .aeaa-product-head span:last-child { color: #56645d; font-weight: 600; white-space: nowrap; }
+      .aeaa-product-status { padding: 9px 10px; color: #7a4b16; background: #fff8e8; border-bottom: 1px solid #ece7da; line-height: 1.45; }
       .aeaa-item { padding: 8px 10px; border-bottom: 1px solid #ece7da; }
       .aeaa-item:last-child { border-bottom: 0; }
       .aeaa-name { color: #17231f; font-weight: 700; line-height: 1.35; }
@@ -1385,7 +1552,7 @@
       .aeaa-completion-icon { width: 52px; height: 52px; margin: 0 auto 12px; border-radius: 50%; display: grid; place-items: center; background: #dff5e6; color: #176b3a; font-size: 30px; font-weight: 800; }
       .aeaa-completion-title { margin: 0; color: #17231f; font-size: 21px; line-height: 1.3; }
       .aeaa-completion-copy { margin: 8px 0 16px; color: #56645d; font-size: 13px; line-height: 1.55; }
-      .aeaa-completion-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid #d8ded9; border-radius: 6px; overflow: hidden; background: #f7faf8; }
+      .aeaa-completion-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid #d8ded9; border-radius: 6px; overflow: hidden; background: #f7faf8; }
       .aeaa-completion-stat { min-width: 0; padding: 11px 6px; border-right: 1px solid #d8ded9; }
       .aeaa-completion-stat:last-child { border-right: 0; }
       .aeaa-completion-value { display: block; color: #17231f; font-size: 20px; font-weight: 800; }
@@ -1398,34 +1565,73 @@
   function renderCompletionNotice() {
     const notice = state.completionNotice;
     if (!notice || typeof notice !== 'object') return '';
+    const productIds = Array.isArray(notice.productIds) && notice.productIds.length
+      ? notice.productIds.map(String)
+      : parseProductIds(notice.productId || '');
+    const productCount = Number(notice.productCount) || productIds.length || 1;
+    const failedCount = Number(notice.failedCount) || 0;
+    const skippedProductIds = Array.isArray(notice.skippedProductIds) ? notice.skippedProductIds.map(String) : [];
+    const failedRows = Array.isArray(notice.failedRows) ? notice.failedRows : [];
+    const reviewProductIds = [...new Set([
+      ...skippedProductIds,
+      ...failedRows.map((item) => String(item.productId || '')).filter(Boolean)
+    ])];
+    const reviewCount = failedCount + skippedProductIds.length;
+    const reviewText = reviewProductIds.length
+      ? `需复查商品：${reviewProductIds.slice(0, 6).join('、')}${reviewProductIds.length > 6 ? ` 等 ${reviewProductIds.length} 个` : ''}。`
+      : '';
+    const title = notice.stopped ? '批量退出已暂停' : '批量退出完成';
+    const copy = notice.stopped
+      ? `${productCount} 个商品的任务因平台安全验证而暂停。`
+      : `${productCount} 个商品的退出队列已全部处理。`;
+    const reminder = notice.stopped
+      ? `${escapeHtml(notice.stoppedReason || '请先完成平台安全验证。')} ${escapeHtml(reviewText)}`
+      : `${escapeHtml(reviewText)}请刷新商品管理页，把鼠标移到 SALE 标签上复查。商品优化完成后，记得重新报名需要参加的活动。`;
     return `
       <div class="aeaa-completion-backdrop" role="dialog" aria-modal="true" aria-labelledby="aeaa-completion-title">
         <div class="aeaa-completion-dialog">
-          <div class="aeaa-completion-icon" aria-hidden="true">✓</div>
-          <h2 class="aeaa-completion-title" id="aeaa-completion-title">活动退出完成</h2>
-          <p class="aeaa-completion-copy">商品 <strong>${escapeHtml(notice.productId || '-')}</strong> 的退出队列已全部处理。</p>
+          <div class="aeaa-completion-icon" aria-hidden="true">${notice.stopped ? '!' : '✓'}</div>
+          <h2 class="aeaa-completion-title" id="aeaa-completion-title">${title}</h2>
+          <p class="aeaa-completion-copy">${copy}</p>
           <div class="aeaa-completion-stats">
-            <div class="aeaa-completion-stat"><span class="aeaa-completion-value">${escapeHtml(notice.total || 0)}</span><span class="aeaa-completion-label">本次处理</span></div>
+            <div class="aeaa-completion-stat"><span class="aeaa-completion-value">${escapeHtml(productCount)}</span><span class="aeaa-completion-label">商品</span></div>
+            <div class="aeaa-completion-stat"><span class="aeaa-completion-value">${escapeHtml(notice.total || 0)}</span><span class="aeaa-completion-label">活动</span></div>
             <div class="aeaa-completion-stat"><span class="aeaa-completion-value">${escapeHtml(notice.successCount || 0)}</span><span class="aeaa-completion-label">退出成功</span></div>
-            <div class="aeaa-completion-stat"><span class="aeaa-completion-value">${escapeHtml(notice.alreadyExitedCount || 0)}</span><span class="aeaa-completion-label">原本已退出</span></div>
+            <div class="aeaa-completion-stat"><span class="aeaa-completion-value">${escapeHtml(reviewCount)}</span><span class="aeaa-completion-label">需复查</span></div>
           </div>
-          <div class="aeaa-completion-reminder">请刷新商品管理页，把鼠标移到 SALE 标签上复查。商品优化完成后，记得重新报名需要参加的活动。</div>
+          <p class="aeaa-completion-copy">退出成功 ${escapeHtml(notice.successCount || 0)}，原本已退出 ${escapeHtml(notice.alreadyExitedCount || 0)}，处理失败 ${escapeHtml(failedCount)}。</p>
+          <div class="aeaa-completion-reminder">${reminder}</div>
           <button class="aeaa-btn" data-act="dismiss-completion">知道了</button>
         </div>
       </div>`;
   }
 
   function renderPlan() {
-    if (!state.plan.length) {
-      return '<div class="aeaa-empty">还没有计划。在任意速卖通卖家后台页面输入商品 ID，点击“查报名活动”。</div>';
+    if (!state.plan.length && !state.scanResults.length) {
+      return '<div class="aeaa-empty">还没有计划。输入 1-10 个商品 ID 后点击“查报名活动”。</div>';
     }
-    return state.plan.map((row) => `
-      <div class="aeaa-item">
-        <div class="aeaa-name">${escapeHtml(row.activityName || row.activityId)}</div>
-        <div class="aeaa-meta">来源: ${escapeHtml(row.saleSource || row.groupName || '-')} / activityId: ${escapeHtml(row.activityId)} / campaignId: ${escapeHtml(row.campaignId)}</div>
-        <div class="aeaa-meta">预热: ${escapeHtml(formatTime(row.showStartTime) || '-')}，结束: ${escapeHtml(formatTime(row.activityEndTime) || '-')}</div>
-      </div>
-    `).join('');
+    const productIds = state.scanProductIds.length
+      ? state.scanProductIds.map(String)
+      : [...new Set(state.plan.map((row) => String(row.productId || '')))].filter(Boolean);
+    return productIds.map((productId) => {
+      const rows = state.plan.filter((row) => String(row.productId || '') === productId);
+      const result = state.scanResults.find((item) => String(item.productId || '') === productId);
+      const status = result && result.status !== 'ready'
+        ? `<div class="aeaa-product-status">${escapeHtml(result.message || '没有可处理活动')}</div>`
+        : '';
+      return `
+        <div class="aeaa-product-group">
+          <div class="aeaa-product-head"><span>${escapeHtml(productId)}</span><span>${rows.length} 个活动</span></div>
+          ${status}
+          ${rows.map((row) => `
+            <div class="aeaa-item">
+              <div class="aeaa-name">${escapeHtml(row.activityName || row.activityId)}</div>
+              <div class="aeaa-meta">来源: ${escapeHtml(row.saleSource || row.groupName || '-')} / activityId: ${escapeHtml(row.activityId)} / campaignId: ${escapeHtml(row.campaignId)}</div>
+              <div class="aeaa-meta">预热: ${escapeHtml(formatTime(row.showStartTime) || '-')}，结束: ${escapeHtml(formatTime(row.activityEndTime) || '-')}</div>
+            </div>
+          `).join('')}
+        </div>`;
+    }).join('');
   }
 
   function render() {
@@ -1440,9 +1646,11 @@
           <button class="aeaa-btn secondary" data-act="min" ${disabled}>-</button>
         </div>
         <div class="aeaa-body">
-          <p class="aeaa-note">输入商品 ID 后，脚本会直接读取商品管理中该商品 SALE 标签背后的数据，只处理其中显示的平台活动和店铺活动。</p>
+          <p class="aeaa-note">每行输入一个商品 ID，最多 10 个；也支持用空格或逗号分隔。</p>
           <div class="aeaa-row">
-            <input class="aeaa-input" data-field="product" placeholder="商品 ID" value="${escapeHtml(state.productId || '')}" ${disabled}>
+            <textarea class="aeaa-input" data-field="product" placeholder="商品 ID，每行一个（最多 10 个）" ${disabled}>${escapeHtml(state.productId || '')}</textarea>
+          </div>
+          <div class="aeaa-row aeaa-actions">
             <button class="aeaa-btn secondary" data-act="scan" ${disabled}>查报名活动</button>
             <button class="aeaa-btn danger" data-act="exit" ${disabled}>普通退出</button>
           </div>
@@ -1483,7 +1691,7 @@
       if (action === 'min') {
         const body = root.querySelector('.aeaa-body');
         body.style.display = body.style.display === 'none' ? 'block' : 'none';
-        root.style.width = body.style.display === 'none' ? '168px' : '430px';
+        root.style.width = body.style.display === 'none' ? '168px' : '';
       }
     });
   }
