@@ -16,7 +16,7 @@ class FixedDate extends Date {
 }
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.8\.9/);
+assert.match(metadata, /@version\s+0\.8\.10/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
 assert.match(metadata, /@noframes/);
@@ -150,7 +150,7 @@ async function runCompletionNoticeScenario() {
     completionNotice: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.8.9'
+    scriptVersion: '0.8.10'
   }));
 
   const completionDocument = {
@@ -609,7 +609,7 @@ async function runExitEntryScenario(
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.8.9'
+    scriptVersion: '0.8.10'
   }));
 
   const document = {
@@ -730,7 +730,244 @@ async function runExitEntryScenario(
 await runExitEntryScenario('商品报名');
 await runExitEntryScenario('同意并下一步');
 await runExitEntryScenario('入围活动报名', true, '平台活动');
-await runExitEntryScenario('入围活动报名', true, '平台活动', 'OPERATOR_EXIT', '测试外围活动', true, true);
 await runExitEntryScenario('无关按钮', false);
+
+async function runUnifiedSequentialEntryScenario() {
+  const productId = '1005000000000099';
+  const sourceCampaignId = '64662';
+  const sourceActivityId = '30000211732';
+  const inboundCampaignId = '64640';
+  const inboundActivityId = '30000211744';
+  const storage = new Map();
+  const handlers = {};
+  const calls = [];
+  const clickOrder = [];
+  let root;
+  let stage = 'peripheral-rules';
+
+  class FakeInput {
+    constructor(placeholder) {
+      this.placeholder = placeholder;
+      this.currentValue = '';
+    }
+    focus() {}
+    dispatchEvent() {
+      return true;
+    }
+    getBoundingClientRect() {
+      return { width: 260, height: 32 };
+    }
+  }
+  Object.defineProperty(FakeInput.prototype, 'value', {
+    get() {
+      return this.currentValue;
+    },
+    set(value) {
+      this.currentValue = value;
+    }
+  });
+
+  const outerInput = new FakeInput('支持商品ID搜索');
+  const inboundInput = new FakeInput('支持商品ID/商品名称搜索');
+  const makeInteractive = (text, onClick) => ({
+    innerText: text,
+    textContent: text,
+    click: onClick,
+    closest() {
+      return this;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    getBoundingClientRect() {
+      return { width: 220, height: 32 };
+    }
+  });
+
+  const window = {
+    location: {
+      search: `?campaignId=${sourceCampaignId}&activityId=${sourceActivityId}&channelId=9999999`,
+      pathname: '/m_apps/campaigns/peripheral-activity',
+      href: `https://csp.aliexpress.com/m_apps/campaigns/peripheral-activity?campaignId=${sourceCampaignId}&activityId=${sourceActivityId}&channelId=9999999`
+    },
+    lib: {
+      mtop: {
+        request(options) {
+          calls.push(options);
+          if (options.api !== 'mtop.global.campaign.merchants.activity.items.query') {
+            return Promise.reject({ ret: ['FAIL::unexpected api'] });
+          }
+          const isInbound = String(options.data.campaignId) === inboundCampaignId &&
+            String(options.data.activityId) === inboundActivityId;
+          return Promise.resolve({
+            ret: ['SUCCESS::调用成功'],
+            data: {
+              dataList: [{
+                itemId: productId,
+                itemStatus: isInbound ? 'PASS' : 'OPERATOR_EXIT'
+              }]
+            }
+          });
+        }
+      }
+    }
+  };
+  window.self = window;
+  window.top = window;
+
+  const navigate = (pathname, campaignId, activityId) => {
+    window.location.pathname = pathname;
+    window.location.search = `?campaignId=${campaignId}&activityId=${activityId}&channelId=9999999`;
+    window.location.href = `https://csp.aliexpress.com${pathname}${window.location.search}`;
+  };
+  const startOuter = makeInteractive('开始报名活动商品', () => {
+    clickOrder.push('开始报名活动商品-外围');
+    stage = 'peripheral-products';
+  });
+  const nextToQualification = makeInteractive('下一步，开始报名入围活动', () => {
+    clickOrder.push('下一步，开始报名入围活动');
+    stage = 'qualification';
+    navigate('/m_apps/campaigns/one-stock-approval', inboundCampaignId, inboundActivityId);
+  });
+  const nextToInbound = makeInteractive('下一步，报名入围活动', () => {
+    clickOrder.push('下一步，报名入围活动');
+    stage = 'inbound-rules';
+    navigate('/m_apps/campaigns/one-stock-goodssign', inboundCampaignId, inboundActivityId);
+  });
+  const startInbound = makeInteractive('开始报名活动商品', () => {
+    clickOrder.push('开始报名活动商品-入围');
+    stage = 'inbound-products';
+  });
+  const registered = makeInteractive('已报名(1)', () => {
+    clickOrder.push('已报名');
+  });
+
+  const row = {
+    productId,
+    itemId: productId,
+    campaignId: sourceCampaignId,
+    activityId: sourceActivityId,
+    activityName: '【2026年8月Choice Day】入围活动-排JV&欧盟地区',
+    catalogActivityName: '【2026年8月Choice Day】外围活动-排JV&欧盟地区',
+    saleSource: '平台活动',
+    channelId: '9999999'
+  };
+  storage.set('ae.activity.assistant.v4', JSON.stringify({
+    productId,
+    dryRun: false,
+    logs: [],
+    plan: [row],
+    exitQueue: [row],
+    exitBatch: { productId, total: 1, successCount: 0, alreadyExitedCount: 0 },
+    exitFlow: null,
+    autoExit: true,
+    channelId: '9999999',
+    scriptVersion: '0.8.10'
+  }));
+
+  const document = {
+    readyState: 'complete',
+    title: '活动报名',
+    body: { innerText: '大促活动指南 外围活动报名 店铺资质审核 入围活动报名' },
+    documentElement: {
+      appendChild(node) {
+        root = node;
+      }
+    },
+    getElementById() {
+      return null;
+    },
+    createElement() {
+      return createRoot((node) => { root = node; }, handlers);
+    },
+    addEventListener() {},
+    querySelector() {
+      return null;
+    },
+    querySelectorAll(selector) {
+      if (selector === 'input') {
+        if (stage === 'peripheral-products') return [outerInput];
+        if (stage === 'inbound-products') return [inboundInput];
+        return [];
+      }
+      if (selector === 'tr,.next-table-row,.ait-table-row,div') return [];
+      if (selector.includes('[role="dialog"]') || selector.includes('[aria-modal="true"]')) return [];
+      if (selector.includes('button') || selector.includes('[role="tab"]') || selector.includes('span,div')) {
+        if (stage === 'peripheral-rules') return [startOuter];
+        if (stage === 'peripheral-products') return [nextToQualification];
+        if (stage === 'qualification') return [nextToInbound];
+        if (stage === 'inbound-rules') return [startInbound];
+        if (stage === 'inbound-products') return [registered];
+      }
+      return [];
+    }
+  };
+
+  class FakeEvent {
+    constructor(type, options) {
+      this.type = type;
+      this.options = options;
+    }
+  }
+
+  vm.runInNewContext(source, {
+    console,
+    Date: FixedDate,
+    Error,
+    JSON,
+    Map,
+    Promise,
+    URLSearchParams,
+    document,
+    window,
+    HTMLInputElement: FakeInput,
+    Event: FakeEvent,
+    KeyboardEvent: FakeEvent,
+    localStorage: {
+      getItem(key) {
+        return storage.get(key) ?? null;
+      },
+      setItem(key, value) {
+        storage.set(key, value);
+      }
+    },
+    getComputedStyle() {
+      return { display: 'block', visibility: 'visible' };
+    },
+    setInterval(callback) {
+      queueMicrotask(callback);
+      return 1;
+    },
+    clearInterval() {},
+    clearTimeout() {},
+    setTimeout(callback, ms) {
+      if (ms < 20000) queueMicrotask(callback);
+      return 1;
+    }
+  });
+
+  for (let index = 0; index < 160; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.deepEqual(clickOrder, [
+    '开始报名活动商品-外围',
+    '下一步，开始报名入围活动',
+    '下一步，报名入围活动',
+    '开始报名活动商品-入围',
+    '已报名'
+  ]);
+  assert.equal(outerInput.value, '', 'the outer activity search input must not be used for an inbound exit');
+  assert.equal(inboundInput.value, productId, 'the inbound activity search input should receive the product ID');
+  assert.equal(window.location.pathname, '/m_apps/campaigns/one-stock-goodssign');
+  assert.equal(
+    calls.some((call) => String(call.data?.campaignId) === inboundCampaignId && String(call.data?.activityId) === inboundActivityId),
+    true,
+    'the unified inbound parent record should be used for status verification'
+  );
+  assert.match(root?.innerHTML || '', /没有找到商品 1005000000000099 的“申请退出活动”按钮/);
+}
+
+await runUnifiedSequentialEntryScenario();
 
 console.log('userscript smoke test passed');

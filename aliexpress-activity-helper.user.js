@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.8.9
+// @version      0.8.10
 // @description  速卖通活动助手：按商品 ID 读取商品管理 SALE 数据中的报名活动，并按页面按钮流程一键普通退出。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
@@ -24,7 +24,7 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.8.9';
+  const SCRIPT_VERSION = '0.8.10';
   const STOCKOUT_REASON = '库存不足';
   const REQUEST_TIMEOUT_MS = 20000;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -38,6 +38,7 @@
     plan: [],
     exitQueue: [],
     exitBatch: null,
+    exitFlow: null,
     completionNotice: null,
     autoExit: false,
     lastScanAt: '',
@@ -52,6 +53,7 @@
     state.plan = [];
     state.exitQueue = [];
     state.exitBatch = null;
+    state.exitFlow = null;
     state.completionNotice = null;
     state.autoExit = false;
     state.scriptVersion = SCRIPT_VERSION;
@@ -77,6 +79,7 @@
       plan: state.plan,
       exitQueue: state.exitQueue,
       exitBatch: state.exitBatch,
+      exitFlow: state.exitFlow,
       completionNotice: state.completionNotice,
       autoExit: state.autoExit,
       lastScanAt: state.lastScanAt,
@@ -836,6 +839,7 @@
       alreadyExitedCount: 0,
       startedAt: new Date().toISOString()
     };
+    state.exitFlow = null;
     state.completionNotice = null;
     state.autoExit = true;
     save();
@@ -882,6 +886,79 @@
       String(query.activityId || '') === String(row.activityId);
   }
 
+  function exitRowKey(row) {
+    return [row && row.productId, row && row.campaignId, row && row.activityId, row && row.saleSource]
+      .map((value) => String(value || ''))
+      .join('|');
+  }
+
+  function exitFlowMatches(row) {
+    return Boolean(state.exitFlow && state.exitFlow.rowKey === exitRowKey(row));
+  }
+
+  function ensureUnifiedExitFlow(row) {
+    if (!exitFlowMatches(row)) {
+      const now = new Date().toISOString();
+      state.exitFlow = {
+        rowKey: exitRowKey(row),
+        stage: 'peripheral',
+        targetCampaignId: '',
+        targetActivityId: '',
+        startedAt: now,
+        updatedAt: now
+      };
+      save();
+    }
+    return state.exitFlow;
+  }
+
+  function updateUnifiedExitFlow(row, values) {
+    const flow = ensureUnifiedExitFlow(row);
+    state.exitFlow = {
+      ...flow,
+      ...values,
+      updatedAt: new Date().toISOString()
+    };
+    save();
+  }
+
+  function clearExitFlow(row) {
+    if (!row || exitFlowMatches(row)) state.exitFlow = null;
+  }
+
+  function isUnifiedFlowPage() {
+    const path = String(pageWindow.location.pathname || '');
+    return path.endsWith('/one-stock-approval') || path.endsWith('/one-stock-goodssign');
+  }
+
+  function isUnifiedInboundSignupPage() {
+    return String(pageWindow.location.pathname || '').endsWith('/one-stock-goodssign');
+  }
+
+  function isCurrentExitPage(row) {
+    if (isCurrentActivity(row)) return true;
+    if (!usesUnifiedInboundEntry(row) || !exitFlowMatches(row) || !isUnifiedFlowPage()) return false;
+
+    const flow = state.exitFlow || {};
+    const updatedAt = Date.parse(flow.updatedAt || flow.startedAt || '');
+    if (Number.isFinite(updatedAt) && Date.now() - updatedAt > 30 * 60 * 1000) return false;
+
+    const query = getQuery();
+    if (flow.targetCampaignId && String(query.campaignId || '') !== String(flow.targetCampaignId)) return false;
+    if (flow.targetActivityId && String(query.activityId || '') !== String(flow.targetActivityId)) return false;
+    return true;
+  }
+
+  function currentPageActivity(row) {
+    const query = getQuery();
+    return {
+      ...row,
+      campaignId: String(query.campaignId || ''),
+      activityId: String(query.activityId || ''),
+      channelId: getChannelId()
+    };
+  }
+
   function clickExactButton(label) {
     const element = [...document.querySelectorAll('button,a,[role="button"]')]
       .find((item) => visible(item) && textOfElement(item) === label);
@@ -901,12 +978,33 @@
     return true;
   }
 
-  function clickButtonStartingWith(label) {
-    const element = [...document.querySelectorAll('button,a,[role="button"]')]
+  function findButtonStartingWith(label) {
+    return [...document.querySelectorAll('button,a,[role="button"]')]
       .find((item) => visible(item) && textOfElement(item).startsWith(label));
+  }
+
+  function findButtonStartingWithAny(labels) {
+    for (const label of labels) {
+      const element = findButtonStartingWith(label);
+      if (element) return element;
+    }
+    return null;
+  }
+
+  function clickButtonStartingWith(label) {
+    const element = findButtonStartingWith(label);
     if (!element) return false;
     element.click();
     return true;
+  }
+
+  async function waitForButtonStartingWithAny(labels, timeout = 7000) {
+    for (let elapsed = 0; elapsed < timeout; elapsed += 250) {
+      const button = findButtonStartingWithAny(labels);
+      if (button) return button;
+      await wait(250);
+    }
+    return null;
   }
 
   function clickStartsWith(label) {
@@ -941,7 +1039,10 @@
 
   function findActivityProductSearchInput() {
     return [...document.querySelectorAll('input')]
-      .find((item) => visible(item) && String(item.placeholder || '').includes('支持商品ID搜索')) || null;
+      .find((item) => {
+        const placeholder = String(item.placeholder || '');
+        return visible(item) && placeholder.startsWith('支持商品ID') && placeholder.includes('搜索');
+      }) || null;
   }
 
   async function waitForActivityProductSearchInput(timeout = 7000) {
@@ -958,7 +1059,7 @@
     const step = row && row.saleSource === '平台活动'
       ? '第 4 步“入围活动报名”'
       : '第 2 步“外围活动报名”';
-    return `没有找到“支持商品ID搜索”输入框。请确认已进入正确活动页面，并手动点击${step}，再进入“商品报名 > 已报名”后重试。`;
+    return `没有找到商品 ID 搜索框。请确认已进入正确活动页面，并手动点击${step}，再进入“商品报名 > 已报名”后重试。`;
   }
 
   function usesUnifiedInboundEntry(row) {
@@ -970,32 +1071,92 @@
     );
   }
 
+  async function ensureUnifiedInboundActivity(row) {
+    ensureUnifiedExitFlow(row);
+    const path = String(pageWindow.location.pathname || '');
+
+    if (path.endsWith('/one-stock-goodssign')) {
+      const target = currentPageActivity(row);
+      if (!target.campaignId || !target.activityId) {
+        throw new Error('入围活动页面缺少活动编号，无法继续。');
+      }
+      updateUnifiedExitFlow(row, {
+        stage: 'inbound',
+        targetCampaignId: target.campaignId,
+        targetActivityId: target.activityId
+      });
+      return target;
+    }
+
+    if (path.endsWith('/one-stock-approval')) {
+      const labels = ['下一步，报名入围活动', '下一步,报名入围活动'];
+      const nextButton = await waitForButtonStartingWithAny(labels, 10000);
+      if (!nextButton) throw new Error('店铺资质审核页没有找到“下一步，报名入围活动”按钮。');
+      const target = currentPageActivity(row);
+      updateUnifiedExitFlow(row, {
+        stage: 'opening-inbound',
+        targetCampaignId: target.campaignId,
+        targetActivityId: target.activityId
+      });
+      log('ok', '店铺资质审核已通过，正在进入第 4 步“入围活动报名”。');
+      nextButton.click();
+      return null;
+    }
+
+    if (!path.endsWith('/peripheral-activity')) {
+      throw new Error('当前不在统一活动报名入口，无法进入平台入围活动。');
+    }
+
+    const labels = ['下一步，开始报名入围活动', '下一步,开始报名入围活动'];
+    let nextButton = findButtonStartingWithAny(labels);
+    if (!nextButton) {
+      const opened = clickExactButton('开始报名活动商品') || clickExactInteractive('商品报名');
+      if (!opened) throw new Error('外围活动页没有找到“开始报名活动商品”入口。');
+      log('ok', '正在打开第 2 步“外围活动报名”的商品列表。');
+      await wait(1800);
+      await dismissBlockingPopups();
+      nextButton = await waitForButtonStartingWithAny(labels, 10000);
+    }
+    if (!nextButton) throw new Error('外围商品报名页没有找到“下一步，开始报名入围活动”按钮。');
+
+    updateUnifiedExitFlow(row, {
+      stage: 'qualification',
+      targetCampaignId: '',
+      targetActivityId: ''
+    });
+    log('ok', '正在从外围报名进入第 3 步“店铺资质审核”。');
+    nextButton.click();
+    return null;
+  }
+
   async function enterActivitySignupStep(row) {
     const unifiedInboundEntry = usesUnifiedInboundEntry(row);
     let input = findActivityProductSearchInput();
-    if (input && !unifiedInboundEntry) return input;
+    if (input && (!unifiedInboundEntry || isUnifiedInboundSignupPage())) return input;
+    if (unifiedInboundEntry && !isUnifiedInboundSignupPage()) {
+      throw new Error('尚未进入第 4 步“入围活动报名”，无法搜索平台活动商品。');
+    }
     const preferredStep = row && row.saleSource === '平台活动' ? '入围活动报名' : '外围活动报名';
     const productAction = { label: '商品报名', click: () => clickExactInteractive('商品报名') };
+    const startAction = { label: '开始报名活动商品', click: () => clickExactButton('开始报名活动商品') };
     const preferredAction = {
       label: preferredStep,
-      click: () => clickExactInteractive(preferredStep),
-      navigationOnly: unifiedInboundEntry
+      click: () => clickExactInteractive(preferredStep)
     };
     const standardActions = [
       productAction,
-      { label: '开始报名活动商品', click: () => clickExactButton('开始报名活动商品') },
+      startAction,
       { label: '同意并下一步', click: () => clickButtonStartingWith('同意并下一步') },
       preferredAction
     ];
     const actions = unifiedInboundEntry
-      ? [preferredAction, ...standardActions, productAction]
+      ? [startAction, productAction]
       : standardActions;
     for (const action of actions) {
       if (!action.click()) continue;
       log('ok', `正在进入“${action.label}”页面。`);
-      await wait(action.navigationOnly ? 2500 : 1200);
+      await wait(1200);
       await dismissBlockingPopups();
-      if (action.navigationOnly) continue;
       input = await waitForActivityProductSearchInput(7000);
       if (input) return input;
     }
@@ -1078,6 +1239,7 @@
         completedAt: new Date().toISOString()
       };
       state.exitBatch = null;
+      state.exitFlow = null;
       log('ok', `退出队列已完成：共处理 ${total} 个活动。请刷新商品管理页复查。`);
       return;
     }
@@ -1086,12 +1248,17 @@
     const productId = String(row.productId || state.productId || '').trim();
     if (!productId) {
       state.autoExit = false;
+      state.exitFlow = null;
       save();
       log('error', '退出队列缺少商品 ID，已停止。');
       return;
     }
 
-    if (!isCurrentActivity(row)) {
+    const unifiedInboundEntry = usesUnifiedInboundEntry(row);
+    if (!isCurrentExitPage(row)) {
+      if (unifiedInboundEntry) ensureUnifiedExitFlow(row);
+      else clearExitFlow();
+      save();
       log('ok', `跳转活动：${row.activityName || row.activityId}`);
       pageWindow.location.href = activityUrl(row);
       return;
@@ -1101,31 +1268,36 @@
     try {
       await waitForMtop();
       await dismissBlockingPopups();
-      const unifiedInboundEntry = usesUnifiedInboundEntry(row);
-      const before = unifiedInboundEntry ? null : await querySignedItem(row, productId);
+      let verificationActivity = row;
+      if (unifiedInboundEntry) {
+        log('ok', '检测到外围与入围共用报名入口；将依次进入外围报名、店铺资质审核和入围报名。');
+        verificationActivity = await ensureUnifiedInboundActivity(row);
+        if (!verificationActivity) return;
+      }
+
+      const before = await querySignedItem(verificationActivity, productId);
       if (before && before.itemStatus === 'OPERATOR_EXIT') {
         state.exitQueue.shift();
         if (state.exitBatch) {
           state.exitBatch.alreadyExitedCount = (Number(state.exitBatch.alreadyExitedCount) || 0) + 1;
         }
+        clearExitFlow(row);
         save();
         log('ok', `已是退出状态：${row.activityName || row.activityId}`);
         return;
-      }
-      if (unifiedInboundEntry) {
-        log('ok', '检测到外围与入围共用报名入口；将进入“入围活动报名”核对，不使用外围退出状态跳过。');
       }
 
       await openSignedListAndSearch(row, productId);
       await submitQuitByPage(productId);
 
-      const after = await querySignedItem(row, productId);
+      const after = await querySignedItem(verificationActivity, productId);
       if (after && after.itemStatus === 'OPERATOR_EXIT') {
         state.exitQueue.shift();
         if (state.exitBatch) {
           state.exitBatch.successCount = (Number(state.exitBatch.successCount) || 0) + 1;
         }
         state.plan = state.plan.filter((item) => item.activityId !== row.activityId);
+        clearExitFlow(row);
         save();
         log('ok', `退出成功：${row.activityName || row.activityId}`);
       } else {
