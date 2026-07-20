@@ -13,10 +13,10 @@ const latest = JSON.parse(fs.readFileSync(path.join(rootDir, 'dist', 'latest.jso
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
 assert.equal(publishedScript, source);
 assert.equal(publishedMetadata.trim(), metadata);
-assert.equal(latest.version, '0.8.10');
+assert.equal(latest.version, '0.8.11');
 assert.equal(latest.updateUrl, 'https://xinhuaya.github.io/aliexpress-activity-helper/stable/aliexpress-activity-helper.meta.js');
 assert.equal(latest.downloadUrl, 'https://xinhuaya.github.io/aliexpress-activity-helper/stable/aliexpress-activity-helper.user.js');
-assert.match(indexHtml, /当前稳定版 <strong>v0\.8\.10<\/strong>/);
+assert.match(indexHtml, /当前稳定版 <strong>v0\.8\.11<\/strong>/);
 assert.match(indexHtml, /href="https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js"/);
 assert.doesNotMatch(`${publishedScript}\n${publishedMetadata}\n${indexHtml}`, /codex|localhost|127\.0\.0\.1/i);
 

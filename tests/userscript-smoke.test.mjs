@@ -16,7 +16,7 @@ class FixedDate extends Date {
 }
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.8\.10/);
+assert.match(metadata, /@version\s+0\.8\.11/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
 assert.match(metadata, /@noframes/);
@@ -28,6 +28,7 @@ assert.match(source, /parseSaleTooltip/);
 assert.match(source, /localizeActTime/);
 assert.match(source, /同意并下一步/);
 assert.match(source, /enterActivitySignupStep/);
+assert.match(source, /nextButton\.click\(\);\s+await waitForPathChange\(path, 10000\);/);
 assert.match(source, /请确认已进入正确活动页面/);
 assert.doesNotMatch(source, /包含已结束活动/);
 assert.match(source, /mtop\.global\.merchant\.new\.product\.manager\.render\.list/);
@@ -150,7 +151,7 @@ async function runCompletionNoticeScenario() {
     completionNotice: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.8.10'
+    scriptVersion: '0.8.11'
   }));
 
   const completionDocument = {
@@ -609,7 +610,7 @@ async function runExitEntryScenario(
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.8.10'
+    scriptVersion: '0.8.11'
   }));
 
   const document = {
@@ -862,7 +863,7 @@ async function runUnifiedSequentialEntryScenario() {
     exitFlow: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.8.10'
+    scriptVersion: '0.8.11'
   }));
 
   const document = {
