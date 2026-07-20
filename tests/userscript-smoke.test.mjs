@@ -4,9 +4,19 @@ import vm from 'node:vm';
 
 const scriptPath = new URL('../aliexpress-activity-helper.user.js', import.meta.url);
 const source = fs.readFileSync(scriptPath, 'utf8');
+const TEST_NOW = new Date(2026, 6, 10, 12, 0).getTime();
+class FixedDate extends Date {
+  constructor(...args) {
+    super(...(args.length ? args : [TEST_NOW]));
+  }
+
+  static now() {
+    return TEST_NOW;
+  }
+}
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.8\.7/);
+assert.match(metadata, /@version\s+0\.8\.8/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
 assert.match(metadata, /@noframes/);
@@ -24,6 +34,8 @@ assert.match(source, /mtop\.global\.merchant\.new\.product\.manager\.render\.lis
 assert.doesNotMatch(source, /mapWithRateLimit/);
 assert.match(source, /baxia-dialog-mask/);
 assert.match(source, /_____tmd_____\/punish/);
+assert.match(source, /活动退出完成/);
+assert.match(source, /商品优化完成后，记得重新报名需要参加的活动/);
 
 const frameWindow = { location: { search: '', pathname: '/', href: 'https://csp.aliexpress.com/' } };
 frameWindow.self = frameWindow;
@@ -93,7 +105,7 @@ mountWindow.top = mountWindow;
 
 vm.runInNewContext(source, {
   console,
-  Date,
+  Date: FixedDate,
   JSON,
   URLSearchParams,
   document: mountDocument,
@@ -117,6 +129,111 @@ vm.runInNewContext(source, {
 
 assert.equal(mountedRoot?.id, 'aeaa-root');
 assert.match(mountedRoot?.innerHTML || '', /AE 活动助手/);
+
+async function runCompletionNoticeScenario() {
+  const productId = '1005000000000088';
+  const completionStorage = new Map();
+  const completionHandlers = {};
+  let completionRoot;
+  completionStorage.set('ae.activity.assistant.v4', JSON.stringify({
+    productId,
+    dryRun: false,
+    logs: [],
+    plan: [],
+    exitQueue: [],
+    exitBatch: {
+      productId,
+      total: 4,
+      successCount: 3,
+      alreadyExitedCount: 1
+    },
+    completionNotice: null,
+    autoExit: true,
+    channelId: '9999999',
+    scriptVersion: '0.8.8'
+  }));
+
+  const completionDocument = {
+    readyState: 'complete',
+    documentElement: {
+      appendChild(node) {
+        completionRoot = node;
+      }
+    },
+    getElementById() {
+      return null;
+    },
+    createElement() {
+      return createRoot((node) => { completionRoot = node; }, completionHandlers);
+    },
+    addEventListener() {},
+    querySelector() {
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    }
+  };
+  const completionWindow = {
+    location: {
+      search: '?channelId=9999999',
+      pathname: '/m_apps/campaigns/home-page',
+      href: 'https://csp.aliexpress.com/m_apps/campaigns/home-page?channelId=9999999'
+    },
+    lib: { mtop: { request() {} } }
+  };
+  completionWindow.self = completionWindow;
+  completionWindow.top = completionWindow;
+
+  vm.runInNewContext(source, {
+    console,
+    Date: FixedDate,
+    Error,
+    JSON,
+    Promise,
+    URLSearchParams,
+    document: completionDocument,
+    window: completionWindow,
+    localStorage: {
+      getItem(key) {
+        return completionStorage.get(key) ?? null;
+      },
+      setItem(key, value) {
+        completionStorage.set(key, value);
+      }
+    },
+    setInterval(callback) {
+      queueMicrotask(callback);
+      return 1;
+    },
+    clearInterval() {},
+    clearTimeout() {},
+    setTimeout(callback) {
+      queueMicrotask(callback);
+      return 1;
+    }
+  });
+
+  for (let index = 0; index < 10; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.match(completionRoot?.innerHTML || '', /活动退出完成/);
+  assert.match(completionRoot?.innerHTML || '', new RegExp(productId));
+  assert.match(completionRoot?.innerHTML || '', />3<\/span><span class="aeaa-completion-label">退出成功/);
+  assert.match(completionRoot?.innerHTML || '', />1<\/span><span class="aeaa-completion-label">原本已退出/);
+
+  completionHandlers.click({
+    target: {
+      closest() {
+        return { dataset: { act: 'dismiss-completion' } };
+      }
+    }
+  });
+  assert.doesNotMatch(completionRoot?.innerHTML || '', /活动退出完成/);
+  assert.equal(JSON.parse(completionStorage.get('ae.activity.assistant.v4')).completionNotice, null);
+}
+
+await runCompletionNoticeScenario();
 
 function createSaleScenario({
   failCatalog = false,
@@ -311,7 +428,7 @@ function createSaleScenario({
 
   vm.runInNewContext(source, {
     console,
-    Date,
+    Date: FixedDate,
     Error,
     JSON,
     Map,
@@ -475,7 +592,7 @@ async function runExitEntryScenario(entryLabel, expectNavigation = true, saleSou
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.8.7'
+    scriptVersion: '0.8.8'
   }));
 
   const document = {
@@ -536,7 +653,7 @@ async function runExitEntryScenario(entryLabel, expectNavigation = true, saleSou
 
   vm.runInNewContext(source, {
     console,
-    Date,
+    Date: FixedDate,
     Error,
     JSON,
     Map,

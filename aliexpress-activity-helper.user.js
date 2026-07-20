@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.8.7
+// @version      0.8.8
 // @description  速卖通活动助手：按商品 ID 读取商品管理 SALE 数据中的报名活动，并按页面按钮流程一键普通退出。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
@@ -24,7 +24,7 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.8.7';
+  const SCRIPT_VERSION = '0.8.8';
   const STOCKOUT_REASON = '库存不足';
   const REQUEST_TIMEOUT_MS = 20000;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -37,6 +37,8 @@
     logs: [],
     plan: [],
     exitQueue: [],
+    exitBatch: null,
+    completionNotice: null,
     autoExit: false,
     lastScanAt: '',
     channelId: '',
@@ -49,6 +51,8 @@
     state.logs = [];
     state.plan = [];
     state.exitQueue = [];
+    state.exitBatch = null;
+    state.completionNotice = null;
     state.autoExit = false;
     state.scriptVersion = SCRIPT_VERSION;
   }
@@ -72,6 +76,8 @@
       logs: state.logs.slice(0, 40),
       plan: state.plan,
       exitQueue: state.exitQueue,
+      exitBatch: state.exitBatch,
+      completionNotice: state.completionNotice,
       autoExit: state.autoExit,
       lastScanAt: state.lastScanAt,
       channelId: state.channelId,
@@ -823,6 +829,14 @@
     }
 
     state.exitQueue = state.plan.slice();
+    state.exitBatch = {
+      productId,
+      total: state.exitQueue.length,
+      successCount: 0,
+      alreadyExitedCount: 0,
+      startedAt: new Date().toISOString()
+    };
+    state.completionNotice = null;
     state.autoExit = true;
     save();
     log('ok', `已创建退出队列：${state.exitQueue.length} 个活动。`);
@@ -1031,9 +1045,20 @@
   async function processExitQueue() {
     if (!state.autoExit || state.busy) return;
     if (!state.exitQueue.length) {
+      const batch = state.exitBatch && typeof state.exitBatch === 'object' ? state.exitBatch : {};
+      const successCount = Number(batch.successCount) || 0;
+      const alreadyExitedCount = Number(batch.alreadyExitedCount) || 0;
+      const total = Number(batch.total) || successCount + alreadyExitedCount;
       state.autoExit = false;
-      save();
-      log('ok', '退出队列已完成。建议刷新活动页复查。');
+      state.completionNotice = {
+        productId: String(batch.productId || state.productId || ''),
+        total,
+        successCount,
+        alreadyExitedCount,
+        completedAt: new Date().toISOString()
+      };
+      state.exitBatch = null;
+      log('ok', `退出队列已完成：共处理 ${total} 个活动。请刷新商品管理页复查。`);
       return;
     }
 
@@ -1059,6 +1084,9 @@
       const before = await querySignedItem(row, productId);
       if (before && before.itemStatus === 'OPERATOR_EXIT') {
         state.exitQueue.shift();
+        if (state.exitBatch) {
+          state.exitBatch.alreadyExitedCount = (Number(state.exitBatch.alreadyExitedCount) || 0) + 1;
+        }
         save();
         log('ok', `已是退出状态：${row.activityName || row.activityId}`);
         return;
@@ -1070,6 +1098,9 @@
       const after = await querySignedItem(row, productId);
       if (after && after.itemStatus === 'OPERATOR_EXIT') {
         state.exitQueue.shift();
+        if (state.exitBatch) {
+          state.exitBatch.successCount = (Number(state.exitBatch.successCount) || 0) + 1;
+        }
         state.plan = state.plan.filter((item) => item.activityId !== row.activityId);
         save();
         log('ok', `退出成功：${row.activityName || row.activityId}`);
@@ -1114,7 +1145,39 @@
       .aeaa-log { margin-top: 8px; max-height: 140px; overflow: auto; background: #151d1a; color: #d7e3d9; border: 1px solid #d0c8ba; border-radius: 6px; font: 11px Consolas, "Cascadia Mono", monospace; }
       .aeaa-log div { padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,.06); line-height: 1.4; }
       .aeaa-log .ok { color:#9de0b1; } .aeaa-log .warn { color:#ffd17d; } .aeaa-log .error { color:#ff9b8f; }
+      .aeaa-completion-backdrop { position: fixed; inset: 0; z-index: 2147483647; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(12, 24, 20, .58); }
+      .aeaa-completion-dialog { width: min(420px, calc(100vw - 32px)); border: 1px solid #2b3b36; border-radius: 8px; background: #fff; box-shadow: 0 24px 70px rgba(0,0,0,.35); padding: 24px; text-align: center; }
+      .aeaa-completion-icon { width: 52px; height: 52px; margin: 0 auto 12px; border-radius: 50%; display: grid; place-items: center; background: #dff5e6; color: #176b3a; font-size: 30px; font-weight: 800; }
+      .aeaa-completion-title { margin: 0; color: #17231f; font-size: 21px; line-height: 1.3; }
+      .aeaa-completion-copy { margin: 8px 0 16px; color: #56645d; font-size: 13px; line-height: 1.55; }
+      .aeaa-completion-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid #d8ded9; border-radius: 6px; overflow: hidden; background: #f7faf8; }
+      .aeaa-completion-stat { min-width: 0; padding: 11px 6px; border-right: 1px solid #d8ded9; }
+      .aeaa-completion-stat:last-child { border-right: 0; }
+      .aeaa-completion-value { display: block; color: #17231f; font-size: 20px; font-weight: 800; }
+      .aeaa-completion-label { display: block; margin-top: 2px; color: #6b766e; font-size: 11px; }
+      .aeaa-completion-reminder { margin: 14px 0; padding: 10px; border-left: 4px solid #d99b24; background: #fff8e8; color: #604813; text-align: left; font-size: 12px; line-height: 1.55; }
+      .aeaa-completion-dialog .aeaa-btn { min-width: 120px; }
     `;
+  }
+
+  function renderCompletionNotice() {
+    const notice = state.completionNotice;
+    if (!notice || typeof notice !== 'object') return '';
+    return `
+      <div class="aeaa-completion-backdrop" role="dialog" aria-modal="true" aria-labelledby="aeaa-completion-title">
+        <div class="aeaa-completion-dialog">
+          <div class="aeaa-completion-icon" aria-hidden="true">✓</div>
+          <h2 class="aeaa-completion-title" id="aeaa-completion-title">活动退出完成</h2>
+          <p class="aeaa-completion-copy">商品 <strong>${escapeHtml(notice.productId || '-')}</strong> 的退出队列已全部处理。</p>
+          <div class="aeaa-completion-stats">
+            <div class="aeaa-completion-stat"><span class="aeaa-completion-value">${escapeHtml(notice.total || 0)}</span><span class="aeaa-completion-label">本次处理</span></div>
+            <div class="aeaa-completion-stat"><span class="aeaa-completion-value">${escapeHtml(notice.successCount || 0)}</span><span class="aeaa-completion-label">退出成功</span></div>
+            <div class="aeaa-completion-stat"><span class="aeaa-completion-value">${escapeHtml(notice.alreadyExitedCount || 0)}</span><span class="aeaa-completion-label">原本已退出</span></div>
+          </div>
+          <div class="aeaa-completion-reminder">请刷新商品管理页，把鼠标移到 SALE 标签上复查。商品优化完成后，记得重新报名需要参加的活动。</div>
+          <button class="aeaa-btn" data-act="dismiss-completion">知道了</button>
+        </div>
+      </div>`;
   }
 
   function renderPlan() {
@@ -1135,6 +1198,7 @@
     const disabled = state.busy ? 'disabled' : '';
     root.innerHTML = `
       <style>${css()}</style>
+      ${renderCompletionNotice()}
       <div class="aeaa-box">
         <div class="aeaa-head">
           <span>AE 活动助手 <small>${state.busy ? '处理中...' : '极速退出'}</small></span>
@@ -1172,6 +1236,12 @@
       const button = event.target.closest('[data-act]');
       if (!button) return;
       const action = button.dataset.act;
+      if (action === 'dismiss-completion') {
+        state.completionNotice = null;
+        save();
+        render();
+        return;
+      }
       if (state.busy) return;
       if (action === 'scan') buildPlan();
       if (action === 'exit') exitPlan();
@@ -1199,7 +1269,7 @@
       mtopReadyLogged = true;
       log('ok', '已连接页面 MTop 接口。');
       clearInterval(readyTimer);
-      if (state.autoExit && state.exitQueue.length) {
+      if (state.autoExit) {
         setTimeout(processExitQueue, 1000);
       }
     }
