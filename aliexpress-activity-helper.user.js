@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.8.12
+// @version      0.8.13
 // @description  速卖通活动助手：按商品 ID 读取商品管理 SALE 数据中的报名活动，并按页面按钮流程一键普通退出。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
@@ -24,8 +24,9 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.8.12';
+  const SCRIPT_VERSION = '0.8.13';
   const UNIFIED_NAVIGATION_TIMEOUT = 45000;
+  const UNIFIED_BUTTON_STABLE_MS = 4000;
   const STOCKOUT_REASON = '库存不足';
   const REQUEST_TIMEOUT_MS = 20000;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -981,7 +982,14 @@
 
   function findButtonStartingWith(label) {
     return [...document.querySelectorAll('button,a,[role="button"]')]
-      .find((item) => visible(item) && textOfElement(item).startsWith(label));
+      .find((item) => {
+        const className = String(item.className || '');
+        return visible(item) &&
+          !item.disabled &&
+          (!item.getAttribute || item.getAttribute('aria-disabled') !== 'true') &&
+          !/(?:^|\s)(?:disabled|loading)(?:\s|$)/i.test(className) &&
+          textOfElement(item).startsWith(label);
+      });
   }
 
   function findButtonStartingWithAny(labels) {
@@ -1003,6 +1011,26 @@
     for (let elapsed = 0; elapsed < timeout; elapsed += 250) {
       const button = findButtonStartingWithAny(labels);
       if (button) return button;
+      await wait(250);
+    }
+    return null;
+  }
+
+  async function waitForStableButtonStartingWithAny(
+    labels,
+    timeout = 12000,
+    stableMs = UNIFIED_BUTTON_STABLE_MS
+  ) {
+    let candidate = null;
+    let stableFor = 0;
+    for (let elapsed = 0; elapsed < timeout; elapsed += 250) {
+      const current = findButtonStartingWithAny(labels);
+      if (current && current === candidate) stableFor += 250;
+      else {
+        candidate = current;
+        stableFor = 0;
+      }
+      if (candidate && stableFor >= stableMs) return candidate;
       await wait(250);
     }
     return null;
@@ -1099,7 +1127,7 @@
 
     if (path.endsWith('/one-stock-approval')) {
       const labels = ['下一步，报名入围活动', '下一步,报名入围活动'];
-      const nextButton = await waitForButtonStartingWithAny(labels, 10000);
+      const nextButton = await waitForStableButtonStartingWithAny(labels, 15000);
       if (!nextButton) throw new Error('店铺资质审核页没有找到“下一步，报名入围活动”按钮。');
       const target = currentPageActivity(row);
       updateUnifiedExitFlow(row, {
