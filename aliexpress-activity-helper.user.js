@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.9.6
+// @version      0.9.7
 // @description  速卖通活动助手：批量读取商品管理 SALE 数据并一键普通退出；新品闪电推不支持退出，将自动忽略。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
@@ -25,10 +25,12 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.9.6';
+  const SCRIPT_VERSION = '0.9.7';
   const MAX_BATCH_PRODUCTS = 10;
   const UNIFIED_NAVIGATION_TIMEOUT = 45000;
   const UNIFIED_BUTTON_STABLE_MS = 4000;
+  const ACTIVITY_ENTRY_TIMEOUT = 18000;
+  const ACTIVITY_ENTRY_STABLE_MS = 750;
   const STOCKOUT_REASON = '库存不足';
   const REQUEST_TIMEOUT_MS = 20000;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -1324,6 +1326,15 @@
     return null;
   }
 
+  async function waitForActivityEntryButton() {
+    await dismissBlockingPopups();
+    return waitForStableButtonStartingWithAny(
+      ['开始报名活动商品'],
+      ACTIVITY_ENTRY_TIMEOUT,
+      ACTIVITY_ENTRY_STABLE_MS
+    );
+  }
+
   async function waitForPathChange(pathname, timeout = UNIFIED_NAVIGATION_TIMEOUT) {
     for (let elapsed = 0; elapsed < timeout; elapsed += 250) {
       ensureExitQueueRunning();
@@ -1517,8 +1528,18 @@
     let nextButton = findButtonStartingWithAny(labels);
     if (!nextButton) {
       ensureExitQueueRunning();
-      const opened = clickExactButton('开始报名活动商品') || clickExactInteractive('商品报名');
-      if (!opened) throw new Error('外围活动页没有找到“开始报名活动商品”入口。');
+      const entryButton = await waitForActivityEntryButton();
+      let opened = false;
+      if (entryButton) {
+        ensureExitQueueRunning();
+        entryButton.click();
+        opened = true;
+      } else {
+        opened = await activateActivityTab('商品报名', { timeout: 4000 });
+      }
+      if (!opened) {
+        throw new Error('等待活动页面加载后，仍没有找到“开始报名活动商品”入口。');
+      }
       log('ok', '正在打开第 2 步“外围活动报名”的商品列表。');
       await wait(1800);
       await dismissBlockingPopups();
@@ -1550,7 +1571,16 @@
       label: '商品报名',
       click: () => clickActivityTab('商品报名') || clickExactInteractive('商品报名')
     };
-    const startAction = { label: '开始报名活动商品', click: () => clickExactButton('开始报名活动商品') };
+    const startAction = {
+      label: '开始报名活动商品',
+      click: async () => {
+        const entryButton = await waitForActivityEntryButton();
+        if (!entryButton) return false;
+        ensureExitQueueRunning();
+        entryButton.click();
+        return true;
+      }
+    };
     const preferredAction = {
       label: preferredStep,
       click: () => clickExactInteractive(preferredStep)
@@ -1566,7 +1596,7 @@
       : standardActions;
     for (const action of actions) {
       ensureExitQueueRunning();
-      if (!action.click()) continue;
+      if (!await action.click()) continue;
       log('ok', `正在进入“${action.label}”页面。`);
       await wait(1200);
       await dismissBlockingPopups();

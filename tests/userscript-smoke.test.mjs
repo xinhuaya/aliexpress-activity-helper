@@ -16,7 +16,7 @@ class FixedDate extends Date {
 }
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.9\.6/);
+assert.match(metadata, /@version\s+0\.9\.7/);
 assert.match(metadata, /@grant\s+GM_notification/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
@@ -181,7 +181,7 @@ async function runCompletionNoticeScenario() {
     completionNotice: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.6'
+    scriptVersion: '0.9.7'
   }));
 
   const completionDocument = {
@@ -761,7 +761,7 @@ async function runExitEntryScenario(
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.6'
+    scriptVersion: '0.9.7'
   }));
 
   const document = {
@@ -977,7 +977,7 @@ async function runSaleResidueScenario(mode) {
     },
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.6'
+    scriptVersion: '0.9.7'
   }));
 
   const document = {
@@ -1203,7 +1203,7 @@ async function runBatchFailurePauseScenario() {
     },
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.6'
+    scriptVersion: '0.9.7'
   }));
 
   const document = {
@@ -1503,7 +1503,7 @@ async function runDelayedStockoutReasonScenario({ penalty = false } = {}) {
     },
     autoExit: true,
     channelId: '1882016',
-    scriptVersion: '0.9.6'
+    scriptVersion: '0.9.7'
   }));
 
   const document = {
@@ -1644,6 +1644,8 @@ async function runUnifiedSequentialEntryScenario() {
   const clickOrder = [];
   let root;
   let stage = 'peripheral-rules';
+  let delayedOuterEntryChecks = 0;
+  let delayedInboundEntryChecks = 0;
 
   class FakeInput {
     constructor(placeholder) {
@@ -1762,7 +1764,7 @@ async function runUnifiedSequentialEntryScenario() {
     exitFlow: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.6'
+    scriptVersion: '0.9.7'
   }));
 
   const document = {
@@ -1793,10 +1795,16 @@ async function runUnifiedSequentialEntryScenario() {
       if (selector === 'tr,.next-table-row,.ait-table-row,div') return [];
       if (selector.includes('[role="dialog"]') || selector.includes('[aria-modal="true"]')) return [];
       if (selector.includes('button') || selector.includes('[role="tab"]') || selector.includes('span,div')) {
-        if (stage === 'peripheral-rules') return [startOuter];
+        if (stage === 'peripheral-rules') {
+          delayedOuterEntryChecks += 1;
+          return delayedOuterEntryChecks >= 7 ? [startOuter] : [];
+        }
         if (stage === 'peripheral-products') return [nextToQualification];
         if (stage === 'qualification') return [nextToInbound];
-        if (stage === 'inbound-rules') return [startInbound];
+        if (stage === 'inbound-rules') {
+          delayedInboundEntryChecks += 1;
+          return delayedInboundEntryChecks >= 7 ? [startInbound] : [];
+        }
         if (stage === 'inbound-products') return [registered];
       }
       return [];
@@ -1857,6 +1865,8 @@ async function runUnifiedSequentialEntryScenario() {
     '开始报名活动商品-入围',
     '已报名'
   ]);
+  assert.equal(delayedOuterEntryChecks >= 7, true, 'the activity entry should wait for delayed page rendering');
+  assert.equal(delayedInboundEntryChecks >= 7, true, 'the inbound activity entry should wait for delayed page rendering');
   assert.equal(outerInput.value, '', 'the outer activity search input must not be used for an inbound exit');
   assert.equal(inboundInput.value, productId, 'the inbound activity search input should receive the product ID');
   assert.equal(window.location.pathname, '/m_apps/campaigns/one-stock-goodssign');
