@@ -16,7 +16,7 @@ class FixedDate extends Date {
 }
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.9\.2/);
+assert.match(metadata, /@version\s+0\.9\.3/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
 assert.match(metadata, /@noframes/);
@@ -52,6 +52,8 @@ assert.match(source, /继续处理/);
 assert.match(source, /AE_USER_PAUSED/);
 assert.match(source, /exitPenaltyWarning/);
 assert.match(source, /队列已自动暂停并停留在当前页面/);
+assert.match(source, /function isNewProductFlashActivity/);
+assert.match(source, /新品闪电推不支持退出/);
 
 const frameWindow = { location: { search: '', pathname: '/', href: 'https://csp.aliexpress.com/' } };
 frameWindow.self = frameWindow;
@@ -172,7 +174,7 @@ async function runCompletionNoticeScenario() {
     completionNotice: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.2'
+    scriptVersion: '0.9.3'
   }));
 
   const completionDocument = {
@@ -263,10 +265,13 @@ function createSaleScenario({
   localizedSecondTime = false,
   unifiedOnly = false,
   nonInboundDecoy = false,
+  includeNewProductFlash = false,
+  newProductFlashOnly = false,
   productIds: suppliedProductIds = []
 } = {}) {
   const handlers = {};
   const calls = [];
+  const storage = new Map();
   const productIds = suppliedProductIds.length
     ? suppliedProductIds.map(String)
     : ['1005000000000001'];
@@ -289,6 +294,27 @@ function createSaleScenario({
   });
   const platformDl = makeDl('平台活动', '【2026年7月A+】入围活动-非俄语区&欧盟地区');
   const shopDl = makeDl('店铺活动', '【2026年7月A+】外围活动-非俄语区&欧盟地区');
+  const newProductFlashName = '新品闪电推-早鸟价85折(俄向不生效)-共享限购-67月S级';
+  const newProductFlashDl = makeDl('平台活动', newProductFlashName);
+  const saleDls = newProductFlashOnly
+    ? [newProductFlashDl]
+    : [platformDl, shopDl, ...(includeNewProductFlash ? [newProductFlashDl] : [])];
+  const standardSaleHtml = [
+    '<dl><dt>平台活动：</dt>',
+    '<dd>【2026年7月A+】入围活动-非俄语区&amp;欧盟地区</dd>',
+    `<dd>${saleStartText} - ${saleEndText}</dd></dl>`,
+    '<dl><dt>店铺活动：</dt>',
+    '<dd>【2026年7月A+】外围活动-非俄语区&amp;欧盟地区</dd>',
+    `<dd>${saleStartText} - ${saleEndText}</dd></dl>`
+  ];
+  const newProductFlashHtml = [
+    '<dl><dt>平台活动：</dt>',
+    `<dd>${newProductFlashName}</dd>`,
+    `<dd>${saleStartText} - ${saleEndText}</dd></dl>`
+  ];
+  const saleHtml = newProductFlashOnly
+    ? newProductFlashHtml
+    : [...standardSaleHtml, ...(includeNewProductFlash ? newProductFlashHtml : [])];
   const createParserContainer = () => ({
     html: '',
     set innerHTML(value) {
@@ -298,7 +324,7 @@ function createSaleScenario({
       return this.html;
     },
     querySelectorAll(selector) {
-      return selector === 'dl' && this.html.includes('店铺活动') ? [platformDl, shopDl] : [];
+      return selector === 'dl' && this.html ? saleDls : [];
     }
   });
 
@@ -353,14 +379,7 @@ function createSaleScenario({
                         type: 'text',
                         text: 'SALE',
                         hoverTip: [{
-                          dataSource: [
-                            '<dl><dt>平台活动：</dt>',
-                            '<dd>【2026年7月A+】入围活动-非俄语区&amp;欧盟地区</dd>',
-                            `<dd>${saleStartText} - ${saleEndText}</dd></dl>`,
-                            '<dl><dt>店铺活动：</dt>',
-                            '<dd>【2026年7月A+】外围活动-非俄语区&amp;欧盟地区</dd>',
-                            `<dd>${saleStartText} - ${saleEndText}</dd></dl>`
-                          ]
+                          dataSource: saleHtml
                         }]
                       }]
                     }
@@ -470,10 +489,12 @@ function createSaleScenario({
     document,
     window,
     localStorage: {
-      getItem() {
-        return null;
+      getItem(key) {
+        return storage.get(key) ?? null;
       },
-      setItem() {}
+      setItem(key, value) {
+        storage.set(key, value);
+      }
     },
     getComputedStyle() {
       return { display: 'block', visibility: 'visible' };
@@ -489,7 +510,14 @@ function createSaleScenario({
     }
   });
 
-  return { handlers, calls, getRoot: () => root, productId, productIds };
+  return {
+    handlers,
+    calls,
+    getRoot: () => root,
+    getState: () => JSON.parse(storage.get('ae.activity.assistant.v4') || '{}'),
+    productId,
+    productIds
+  };
 }
 
 async function runScan(scenario, inputValue = scenario.productId) {
@@ -518,8 +546,28 @@ assert.match(saleScenario.getRoot()?.innerHTML || '', /外围活动-非俄语区
 assert.match(saleScenario.getRoot()?.innerHTML || '', /30000211726/);
 assert.match(saleScenario.getRoot()?.innerHTML || '', /入围活动-非俄语区&amp;欧盟地区/);
 assert.match(saleScenario.getRoot()?.innerHTML || '', /30000211727/);
-assert.match(saleScenario.getRoot()?.innerHTML || '', /保留 2 条未结束活动（平台 1，店铺 1）/);
+assert.match(saleScenario.getRoot()?.innerHTML || '', /保留 2 条可退出活动（平台 1，店铺 1）/);
 assert.match(saleScenario.getRoot()?.innerHTML || '', /批量核对完成：1\/1 个商品有可处理活动，共 2 个活动/);
+
+const mixedNewProductFlashScenario = createSaleScenario({ includeNewProductFlash: true });
+await runScan(mixedNewProductFlashScenario);
+const mixedNewProductFlashState = mixedNewProductFlashScenario.getState();
+assert.equal(mixedNewProductFlashState.plan.length, 2);
+assert.equal(mixedNewProductFlashState.scanResults[0].ignoredNewProductFlashCount, 1);
+assert.match(mixedNewProductFlashScenario.getRoot()?.innerHTML || '', /2 个活动待处理；已忽略 1 条新品闪电推/);
+assert.match(mixedNewProductFlashScenario.getRoot()?.innerHTML || '', /保留 2 条可退出活动（平台 1，店铺 1）；已忽略 1 条新品闪电推/);
+
+const newProductFlashOnlyScenario = createSaleScenario({ newProductFlashOnly: true });
+await runScan(newProductFlashOnlyScenario);
+const newProductFlashOnlyState = newProductFlashOnlyScenario.getState();
+assert.equal(newProductFlashOnlyState.plan.length, 0);
+assert.equal(newProductFlashOnlyState.scanResults[0].status, 'ignored');
+assert.equal(newProductFlashOnlyState.scanResults[0].ignoredNewProductFlashCount, 1);
+assert.equal(
+  newProductFlashOnlyScenario.calls.filter((call) => call.api === 'mtop.global.campaign.merchants.activity.list.nodada.data').length,
+  0
+);
+assert.match(newProductFlashOnlyScenario.getRoot()?.innerHTML || '', /该类活动不支持退出，已自动忽略/);
 
 const batchProductIds = ['1005000000000001', '1005000000000002'];
 const batchScenario = createSaleScenario({ productIds: batchProductIds });
@@ -669,7 +717,7 @@ async function runExitEntryScenario(
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.2'
+    scriptVersion: '0.9.3'
   }));
 
   const document = {
@@ -873,7 +921,7 @@ async function runBatchFailurePauseScenario() {
     },
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.2'
+    scriptVersion: '0.9.3'
   }));
 
   const document = {
@@ -1147,8 +1195,8 @@ async function runDelayedStockoutReasonScenario({ penalty = false } = {}) {
     itemId: productId,
     campaignId,
     activityId,
-    activityName: '新品闪推-早鸟价85折(俄向不生效)-共享限购-67月S级',
-    catalogActivityName: '新品闪推-早鸟价85折(俄向不生效)-共享限购-67月S级',
+    activityName: '普通平台活动-早鸟价85折(俄向不生效)-共享限购-67月S级',
+    catalogActivityName: '普通平台活动-早鸟价85折(俄向不生效)-共享限购-67月S级',
     saleSource: '平台活动',
     channelId: '1882016'
   };
@@ -1173,7 +1221,7 @@ async function runDelayedStockoutReasonScenario({ penalty = false } = {}) {
     },
     autoExit: true,
     channelId: '1882016',
-    scriptVersion: '0.9.2'
+    scriptVersion: '0.9.3'
   }));
 
   const document = {
@@ -1432,7 +1480,7 @@ async function runUnifiedSequentialEntryScenario() {
     exitFlow: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.2'
+    scriptVersion: '0.9.3'
   }));
 
   const document = {

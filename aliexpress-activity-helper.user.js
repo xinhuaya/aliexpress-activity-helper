@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.9.2
-// @description  速卖通活动助手：批量读取商品管理 SALE 数据中的报名活动，并按页面按钮流程一键普通退出。
+// @version      0.9.3
+// @description  速卖通活动助手：批量读取商品管理 SALE 数据并一键普通退出；新品闪电推不支持退出，将自动忽略。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
 // @updateURL    https://xinhuaya.github.io/aliexpress-activity-helper/stable/aliexpress-activity-helper.meta.js
@@ -24,7 +24,7 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.9.2';
+  const SCRIPT_VERSION = '0.9.3';
   const MAX_BATCH_PRODUCTS = 10;
   const UNIFIED_NAVIGATION_TIMEOUT = 45000;
   const UNIFIED_BUTTON_STABLE_MS = 4000;
@@ -669,6 +669,13 @@
     return '';
   }
 
+  function isNewProductFlashActivity(value) {
+    const names = value && typeof value === 'object'
+      ? [value.name, value.activityName, value.catalogActivityName, value.campaignName]
+      : [value];
+    return names.some((name) => /新品(?:闪电推|闪推)/.test(String(name || '')));
+  }
+
   function normalizeActivityText(value) {
     return String(value || '')
       .toLowerCase()
@@ -839,26 +846,38 @@
             continue;
           }
 
-          const exitEntries = saleActivities.filter((item) => {
+          const activeEntries = saleActivities.filter((item) => {
             const end = new Date(item.end.replace(/-/g, '/')).getTime();
             return !end || end >= Date.now();
           });
+          const newProductFlashEntries = activeEntries.filter(isNewProductFlashActivity);
+          const exitEntries = activeEntries.filter((item) => !isNewProductFlashActivity(item));
+          const ignoredNewProductFlashCount = newProductFlashEntries.length;
           const platformCount = exitEntries.filter((item) => item.source === '平台活动').length;
           const shopCount = exitEntries.filter((item) => item.source === '店铺活动').length;
-          log('ok', `商品 ${productId} 的 SALE 显示 ${saleActivities.length} 条活动；保留 ${exitEntries.length} 条未结束活动（平台 ${platformCount}，店铺 ${shopCount}）。`);
+          const ignoredText = ignoredNewProductFlashCount
+            ? `；已忽略 ${ignoredNewProductFlashCount} 条新品闪电推`
+            : '';
+          log('ok', `商品 ${productId} 的 SALE 显示 ${saleActivities.length} 条活动；保留 ${exitEntries.length} 条可退出活动（平台 ${platformCount}，店铺 ${shopCount}）${ignoredText}。`);
 
           if (!exitEntries.length) {
+            const onlyNewProductFlash = ignoredNewProductFlashCount > 0;
             scanResults.push({
               productId,
-              status: 'no_activity',
+              status: onlyNewProductFlash ? 'ignored' : 'no_activity',
               activityCount: 0,
               platformCount,
               shopCount,
-              message: '没有未结束活动'
+              ignoredNewProductFlashCount,
+              message: onlyNewProductFlash
+                ? `仅有 ${ignoredNewProductFlashCount} 条新品闪电推；该类活动不支持退出，已自动忽略。`
+                : '没有未结束活动'
             });
             state.scanResults = scanResults.slice();
             save();
-            log('warn', `商品 ${productId} 的 SALE 中没有未结束活动，已跳过。`);
+            log('warn', onlyNewProductFlash
+              ? `商品 ${productId} 只有新品闪电推；该类活动不支持退出，已自动忽略。`
+              : `商品 ${productId} 的 SALE 中没有未结束活动，已跳过。`);
             continue;
           }
 
@@ -898,12 +917,13 @@
             activityCount: rows.length,
             platformCount,
             shopCount,
-            message: `${rows.length} 个活动待处理`
+            ignoredNewProductFlashCount,
+            message: `${rows.length} 个活动待处理${ignoredNewProductFlashCount ? `；已忽略 ${ignoredNewProductFlashCount} 条新品闪电推` : ''}`
           });
           state.plan = plan.slice();
           state.scanResults = scanResults.slice();
           save();
-          log('ok', `商品 ${productId} 核对完成：${rows.length} 个活动可处理。`);
+          log('ok', `商品 ${productId} 核对完成：${rows.length} 个活动可处理${ignoredNewProductFlashCount ? `，另有 ${ignoredNewProductFlashCount} 条新品闪电推已忽略` : ''}。`);
         } catch (error) {
           if (error && error.code === 'AE_SECURITY_CHALLENGE') throw error;
           const message = formatError(error);
@@ -929,7 +949,7 @@
       save();
       const readyCount = scanResults.filter((item) => item.status === 'ready').length;
       const skippedCount = scanResults.length - readyCount;
-      log(plan.length ? 'ok' : 'warn', `批量核对完成：${readyCount}/${productIds.length} 个商品有可处理活动，共 ${plan.length} 个活动${skippedCount ? `；${skippedCount} 个商品无活动或扫描失败` : ''}。`);
+      log(plan.length ? 'ok' : 'warn', `批量核对完成：${readyCount}/${productIds.length} 个商品有可处理活动，共 ${plan.length} 个活动${skippedCount ? `；${skippedCount} 个商品无普通活动、仅有新品闪电推或扫描失败` : ''}。`);
       return true;
     } catch (error) {
       state.plan = [];
@@ -951,21 +971,39 @@
       if (!scanned) return;
     }
     if (!state.plan.length) {
-      log('error', '这些商品没有可执行的退出计划，已停止。');
+      const ignoredNewProductFlashCount = state.scanResults.reduce(
+        (total, item) => total + (Number(item.ignoredNewProductFlashCount) || 0),
+        0
+      );
+      log(ignoredNewProductFlashCount ? 'warn' : 'error', ignoredNewProductFlashCount
+        ? `只检测到 ${ignoredNewProductFlashCount} 条新品闪电推；该类活动不支持退出，已自动忽略，无需继续处理。`
+        : '这些商品没有可执行的退出计划，已停止。');
       return;
     }
 
+    const ignoredNewProductFlashCount = state.scanResults.reduce(
+      (total, item) => total + (Number(item.ignoredNewProductFlashCount) || 0),
+      0
+    );
     const summary = productIds.map((productId) => {
       const count = state.plan.filter((row) => String(row.productId) === productId).length;
       const result = state.scanResults.find((item) => String(item.productId) === productId);
       if (count) return `- ${productId}：${count} 个活动`;
+      if (result && result.status === 'ignored') return `- ${productId}：仅有新品闪电推，已忽略`;
       return `- ${productId}：${result && result.status === 'error' ? '扫描失败，将跳过' : '没有未结束活动'}`;
     }).join('\n');
     const queuedProductIds = [...new Set(state.plan.map((row) => String(row.productId || '')))].filter(Boolean);
-    const skippedProductIds = productIds.filter((productId) => !queuedProductIds.includes(productId));
+    const ignoredNewProductFlashProductIds = productIds.filter((productId) => {
+      const result = state.scanResults.find((item) => String(item.productId) === productId);
+      return result && result.status === 'ignored';
+    });
+    const skippedProductIds = productIds.filter((productId) => (
+      !queuedProductIds.includes(productId) && !ignoredNewProductFlashProductIds.includes(productId)
+    ));
     const ok = window.confirm(
       `确认普通退出 ${queuedProductIds.length} 个商品的 ${state.plan.length} 个活动吗？\n\n` +
       `${summary}\n\n` +
+      `${ignoredNewProductFlashCount ? `新品闪电推已自动忽略 ${ignoredNewProductFlashCount} 条，不会退出。\n` : ''}` +
       '退出原因：库存不足\n' +
       '单个活动失败会自动暂停并停留在当前页面，检查后可继续。\n' +
       '遇到处罚提示或安全验证也会暂停，不会强行提交。\n' +
@@ -983,6 +1021,8 @@
       productCount: productIds.length,
       queuedProductCount: queuedProductIds.length,
       skippedProductIds,
+      ignoredNewProductFlashProductIds,
+      ignoredNewProductFlashCount,
       total: state.exitQueue.length,
       successCount: 0,
       alreadyExitedCount: 0,
@@ -1536,6 +1576,10 @@
       productCount: Number(batch.productCount) || productIds.length,
       queuedProductCount: Number(batch.queuedProductCount) || productIds.length,
       skippedProductIds: Array.isArray(batch.skippedProductIds) ? batch.skippedProductIds.map(String) : [],
+      ignoredNewProductFlashProductIds: Array.isArray(batch.ignoredNewProductFlashProductIds)
+        ? batch.ignoredNewProductFlashProductIds.map(String)
+        : [],
+      ignoredNewProductFlashCount: Number(batch.ignoredNewProductFlashCount) || 0,
       total: Number(batch.total) || successCount + alreadyExitedCount + failedCount,
       successCount,
       alreadyExitedCount,
@@ -1572,6 +1616,18 @@
       state.exitFlow = null;
       save();
       log('error', '退出队列缺少商品 ID，已停止。');
+      return;
+    }
+
+    if (isNewProductFlashActivity(row)) {
+      state.exitQueue.shift();
+      state.plan = state.plan.filter((item) => exitRowKey(item) !== exitRowKey(row));
+      if (state.exitBatch) {
+        state.exitBatch.ignoredNewProductFlashCount = (Number(state.exitBatch.ignoredNewProductFlashCount) || 0) + 1;
+      }
+      save();
+      log('warn', `已忽略新品闪电推：${row.activityName || row.activityId}。该类活动不支持退出。`);
+      setTimeout(processExitQueue, 500);
       return;
     }
 
@@ -1716,6 +1772,7 @@
     const failedCount = Number(notice.failedCount) || 0;
     const skippedProductIds = Array.isArray(notice.skippedProductIds) ? notice.skippedProductIds.map(String) : [];
     const failedRows = Array.isArray(notice.failedRows) ? notice.failedRows : [];
+    const ignoredNewProductFlashCount = Number(notice.ignoredNewProductFlashCount) || 0;
     const reviewProductIds = [...new Set([
       ...skippedProductIds,
       ...failedRows.map((item) => String(item.productId || '')).filter(Boolean)
@@ -1730,7 +1787,7 @@
       : `${productCount} 个商品的退出队列已全部处理。`;
     const reminder = notice.stopped
       ? `${escapeHtml(notice.stoppedReason || '请先完成平台安全验证。')} ${escapeHtml(reviewText)}`
-      : `${escapeHtml(reviewText)}请刷新商品管理页，把鼠标移到 SALE 标签上复查。商品优化完成后，记得重新报名需要参加的活动。`;
+      : `${ignoredNewProductFlashCount ? `新品闪电推已自动忽略 ${escapeHtml(ignoredNewProductFlashCount)} 条，不计入失败。` : ''}${escapeHtml(reviewText)}请刷新商品管理页，把鼠标移到 SALE 标签上复查。商品优化完成后，记得重新报名需要参加的活动。`;
     return `
       <div class="aeaa-completion-backdrop" role="dialog" aria-modal="true" aria-labelledby="aeaa-completion-title">
         <div class="aeaa-completion-dialog">
@@ -1760,7 +1817,7 @@
     return productIds.map((productId) => {
       const rows = state.plan.filter((row) => String(row.productId || '') === productId);
       const result = state.scanResults.find((item) => String(item.productId || '') === productId);
-      const status = result && result.status !== 'ready'
+      const status = result && (result.status !== 'ready' || Number(result.ignoredNewProductFlashCount) > 0)
         ? `<div class="aeaa-product-status">${escapeHtml(result.message || '没有可处理活动')}</div>`
         : '';
       return `
@@ -1792,7 +1849,7 @@
           <button class="aeaa-btn secondary" data-act="min">-</button>
         </div>
         <div class="aeaa-body">
-          <p class="aeaa-note">每行输入一个商品 ID，最多 10 个；也支持用空格或逗号分隔。</p>
+          <p class="aeaa-note">每行输入一个商品 ID，最多 10 个；新品闪电推不支持退出，扫描时会自动忽略。</p>
           <div class="aeaa-row">
             <textarea class="aeaa-input" data-field="product" placeholder="商品 ID，每行一个（最多 10 个）" ${controlsDisabled}>${escapeHtml(state.productId || '')}</textarea>
           </div>
@@ -1848,7 +1905,9 @@
     document.documentElement.appendChild(root);
     bind();
     render();
-    log('ok', upgradedFromOldVersion ? `面板已升级到 ${SCRIPT_VERSION}，旧版扫描队列已清空。` : '面板已加载。');
+    log('ok', upgradedFromOldVersion
+      ? `面板已升级到 ${SCRIPT_VERSION}，旧版扫描队列已清空。新品闪电推不支持退出，扫描时会自动忽略。`
+      : '面板已加载。');
     setTimeout(dismissBlockingPopups, 1200);
   }
 

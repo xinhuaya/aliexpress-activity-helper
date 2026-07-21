@@ -94,6 +94,15 @@
       line-height: 1.7;
     }
 
+    .notice strong { display: block; margin-bottom: 2px; color: #44330f; }
+
+    .install-note {
+      margin: 12px 0 0;
+      color: #65726e;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
     .steps {
       margin-top: 52px;
       border-top: 1px solid #d8dfdc;
@@ -135,7 +144,11 @@
     <p class="version">当前稳定版 <strong>v__VERSION__</strong></p>
     <a class="install-button" href="__DOWNLOAD_URL__">安装或更新稳定版</a>
 
-    <div class="notice">首次迁移到自动更新版时，请允许 Tampermonkey 覆盖旧脚本。安装完成后刷新速卖通后台页面。</div>
+    <div class="notice">
+      <strong>v__VERSION__ 重要提示</strong>
+      “新品闪电推”不可以通过本脚本退出，扫描时会自动忽略，不影响其他平台活动和店铺活动的退出。
+    </div>
+    <p class="install-note">首次迁移到自动更新版时，请允许 Tampermonkey 覆盖旧脚本。安装完成后刷新速卖通后台页面。</p>
 
     <section class="steps">
       <h2>安装步骤</h2>
