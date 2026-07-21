@@ -16,7 +16,7 @@ class FixedDate extends Date {
 }
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.9\.4/);
+assert.match(metadata, /@version\s+0\.9\.5/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
 assert.match(metadata, /@noframes/);
@@ -28,6 +28,9 @@ assert.match(source, /parseSaleTooltip/);
 assert.match(source, /localizeActTime/);
 assert.match(source, /同意并下一步/);
 assert.match(source, /enterActivitySignupStep/);
+assert.match(source, /function activateActivityTab/);
+assert.match(source, /已进入“商品报名 > 已报名”，正在搜索商品/);
+assert.match(source, /没有成功切换到“已报名”标签/);
 assert.match(source, /const UNIFIED_NAVIGATION_TIMEOUT = 45000;/);
 assert.match(source, /const UNIFIED_BUTTON_STABLE_MS = 4000;/);
 assert.match(source, /waitForStableButtonStartingWithAny\(labels, 15000\)/);
@@ -174,7 +177,7 @@ async function runCompletionNoticeScenario() {
     completionNotice: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.4'
+    scriptVersion: '0.9.5'
   }));
 
   const completionDocument = {
@@ -647,6 +650,9 @@ async function runExitEntryScenario(
   let entryClicks = 0;
   let productTabClicks = 0;
   let registeredClicks = 0;
+  let registeredOuterClicks = 0;
+  let registeredTabActive = false;
+  let searchedWhileRegistered = false;
   const clickOrder = [];
 
   class FakeInput {
@@ -668,6 +674,7 @@ async function runExitEntryScenario(
     },
     set(value) {
       this.currentValue = value;
+      searchedWhileRegistered = registeredTabActive;
     }
   });
   const input = new FakeInput();
@@ -695,9 +702,22 @@ async function runExitEntryScenario(
     clickOrder.push('商品报名');
     signupVisible = true;
   });
+  const registeredOuter = makeInteractive('已报名(1)', () => {
+    registeredOuterClicks += 1;
+  });
+  registeredOuter.className = 'ait-tabs-tab';
   const registered = makeInteractive('已报名(1)', () => {
     registeredClicks += 1;
+    registeredTabActive = true;
+    registeredOuter.className = 'ait-tabs-tab ait-tabs-tab-active';
   });
+  registered.className = 'ait-tabs-tab-btn';
+  registered.getAttribute = (name) => {
+    if (name === 'role') return 'tab';
+    if (name === 'aria-selected') return registeredTabActive ? 'true' : 'false';
+    return null;
+  };
+  registered.closest = (selector) => selector.includes('.ait-tabs-tab') ? registeredOuter : registered;
 
   const row = {
     productId,
@@ -717,7 +737,7 @@ async function runExitEntryScenario(
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.4'
+    scriptVersion: '0.9.5'
   }));
 
   const document = {
@@ -744,7 +764,9 @@ async function runExitEntryScenario(
       if (selector === 'tr,.next-table-row,.ait-table-row,div') return [];
       if (selector.includes('[role="dialog"]') || selector.includes('[aria-modal="true"]')) return [];
       if (selector.includes('button') || selector.includes('[role="tab"]') || selector.includes('span,div')) {
-        return includeProductTab ? [productTab, entry, registered] : [entry, registered];
+        return includeProductTab
+          ? [productTab, entry, registeredOuter, registered]
+          : [entry, registeredOuter, registered];
       }
       return [];
     }
@@ -824,6 +846,8 @@ async function runExitEntryScenario(
       assert.deepEqual(clickOrder.slice(0, 2), [entryLabel, '商品报名']);
     }
     assert.equal(registeredClicks, 1, 'registered tab should be opened');
+    assert.equal(registeredOuterClicks, 0, 'the non-interactive registered tab wrapper must not be clicked');
+    assert.equal(searchedWhileRegistered, true, 'product search must wait until the registered tab is active');
     assert.equal(input.value, productId, 'product ID should reach the activity search input');
     assert.match(html, /没有找到商品 1005000000000002 的“申请退出活动”按钮/);
   } else {
@@ -926,7 +950,7 @@ async function runSaleResidueScenario(mode) {
     },
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.4'
+    scriptVersion: '0.9.5'
   }));
 
   const document = {
@@ -1133,7 +1157,7 @@ async function runBatchFailurePauseScenario() {
     },
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.4'
+    scriptVersion: '0.9.5'
   }));
 
   const document = {
@@ -1433,7 +1457,7 @@ async function runDelayedStockoutReasonScenario({ penalty = false } = {}) {
     },
     autoExit: true,
     channelId: '1882016',
-    scriptVersion: '0.9.4'
+    scriptVersion: '0.9.5'
   }));
 
   const document = {
@@ -1692,7 +1716,7 @@ async function runUnifiedSequentialEntryScenario() {
     exitFlow: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.4'
+    scriptVersion: '0.9.5'
   }));
 
   const document = {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.9.4
+// @version      0.9.5
 // @description  速卖通活动助手：批量读取商品管理 SALE 数据并一键普通退出；新品闪电推不支持退出，将自动忽略。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
@@ -24,7 +24,7 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.9.4';
+  const SCRIPT_VERSION = '0.9.5';
   const MAX_BATCH_PRODUCTS = 10;
   const UNIFIED_NAVIGATION_TIMEOUT = 45000;
   const UNIFIED_BUTTON_STABLE_MS = 4000;
@@ -1239,12 +1239,88 @@
     return false;
   }
 
-  function clickStartsWith(label) {
-    const element = [...document.querySelectorAll('button,a,[role="button"],span,div')]
-      .find((item) => visible(item) && textOfElement(item).startsWith(`${label}(`));
+  const ACTIVITY_TAB_SELECTOR = [
+    '[role="tab"]',
+    '.ait-tabs-tab-btn',
+    '.next-tabs-tab-inner',
+    '.ait-tabs-tab',
+    '.next-tabs-tab'
+  ].join(',');
+
+  function activityTabWrapper(element) {
+    if (!element || !element.closest) return null;
+    return element.closest('.ait-tabs-tab,.next-tabs-tab');
+  }
+
+  function activityTabMarkedActive(element) {
     if (!element) return false;
-    (element.closest('button,a,[role="button"],.ait-tabs-tab,.next-tabs-tab') || element).click();
+    const ariaSelected = element.getAttribute && element.getAttribute('aria-selected');
+    const className = String(element.className || '');
+    return ariaSelected === 'true' ||
+      /(?:^|\s)(?:ait-tabs-tab-active|next-tabs-tab-active|active|selected)(?:\s|$)/i.test(className);
+  }
+
+  function activityTabIsActive(element) {
+    return activityTabMarkedActive(element) || activityTabMarkedActive(activityTabWrapper(element));
+  }
+
+  function activityTabSupportsActiveState(element) {
+    if (!element) return false;
+    const wrapper = activityTabWrapper(element);
+    const ariaSelected = element.getAttribute && element.getAttribute('aria-selected');
+    const className = `${String(element.className || '')} ${String(wrapper && wrapper.className || '')}`;
+    return ariaSelected !== null && ariaSelected !== undefined ||
+      /(?:^|\s)(?:ait-tabs-tab|next-tabs-tab)(?:\s|$)/.test(className);
+  }
+
+  function activityTabPriority(element) {
+    const role = element && element.getAttribute && element.getAttribute('role');
+    const className = String(element && element.className || '');
+    if (role === 'tab') return 0;
+    if (/(?:^|\s)(?:ait-tabs-tab-btn|next-tabs-tab-inner)(?:\s|$)/.test(className)) return 1;
+    if (/(?:^|\s)(?:ait-tabs-tab|next-tabs-tab)(?:\s|$)/.test(className)) return 2;
+    return 3;
+  }
+
+  function findActivityTab(label, startsWith = false) {
+    return [...document.querySelectorAll(ACTIVITY_TAB_SELECTOR)]
+      .filter((element) => {
+        const assistantRoot = element.closest && element.closest('#aeaa-root');
+        const inAssistant = assistantRoot && assistantRoot.id === 'aeaa-root';
+        const text = textOfElement(element);
+        const matches = startsWith
+          ? text === label || text.startsWith(`${label}(`)
+          : text === label;
+        return visible(element) && !inAssistant && matches;
+      })
+      .sort((left, right) => activityTabPriority(left) - activityTabPriority(right))[0] || null;
+  }
+
+  function clickActivityTab(label, startsWith = false) {
+    const tab = findActivityTab(label, startsWith);
+    if (!tab) return false;
+    tab.click();
     return true;
+  }
+
+  async function activateActivityTab(label, { startsWith = false, timeout = 8000 } = {}) {
+    let lastClickedAt = -1000;
+    for (let elapsed = 0; elapsed <= timeout; elapsed += 250) {
+      ensureExitQueueRunning();
+      const tab = findActivityTab(label, startsWith);
+      if (tab && activityTabIsActive(tab)) return true;
+      if (tab && !activityTabSupportsActiveState(tab)) {
+        tab.click();
+        await wait(350);
+        return true;
+      }
+      if (tab && elapsed - lastClickedAt >= 1000) {
+        tab.click();
+        lastClickedAt = elapsed;
+      }
+      await wait(250);
+    }
+    return false;
   }
 
   function dismissMarketingPlanPopup() {
@@ -1376,7 +1452,10 @@
       throw new Error('尚未进入第 4 步“入围活动报名”，无法搜索平台活动商品。');
     }
     const preferredStep = row && row.saleSource === '平台活动' ? '入围活动报名' : '外围活动报名';
-    const productAction = { label: '商品报名', click: () => clickExactInteractive('商品报名') };
+    const productAction = {
+      label: '商品报名',
+      click: () => clickActivityTab('商品报名') || clickExactInteractive('商品报名')
+    };
     const startAction = { label: '开始报名活动商品', click: () => clickExactButton('开始报名活动商品') };
     const preferredAction = {
       label: preferredStep,
@@ -1410,7 +1489,20 @@
     let input = await enterActivitySignupStep(row);
     await dismissBlockingPopups();
     ensureExitQueueRunning();
-    if (clickStartsWith('已报名')) await wait(3500);
+    const productTab = findActivityTab('商品报名');
+    if (productTab && activityTabSupportsActiveState(productTab) && !activityTabIsActive(productTab)) {
+      const productTabReady = await activateActivityTab('商品报名');
+      if (!productTabReady) {
+        throw new Error('没有成功切换到“商品报名”标签。请手动点击“商品报名 > 已报名”后，再点击“继续处理”。');
+      }
+      await wait(1200);
+    }
+    const registeredTabReady = await activateActivityTab('已报名', { startsWith: true });
+    if (!registeredTabReady) {
+      throw new Error('没有成功切换到“已报名”标签。请手动点击“商品报名 > 已报名”后，再点击“继续处理”。');
+    }
+    log('ok', '已进入“商品报名 > 已报名”，正在搜索商品。');
+    await wait(2500);
     await dismissBlockingPopups();
     ensureExitQueueRunning();
 
