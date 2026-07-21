@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.9.1
+// @version      0.9.2
 // @description  速卖通活动助手：批量读取商品管理 SALE 数据中的报名活动，并按页面按钮流程一键普通退出。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
@@ -24,7 +24,7 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.9.1';
+  const SCRIPT_VERSION = '0.9.2';
   const MAX_BATCH_PRODUCTS = 10;
   const UNIFIED_NAVIGATION_TIMEOUT = 45000;
   const UNIFIED_BUTTON_STABLE_MS = 4000;
@@ -1410,9 +1410,27 @@
       .find((element) => visible(element) && textOfElement(element) === '申请退出活动');
   }
 
-  function exitPenaltyWarning() {
-    const dialog = [...document.querySelectorAll('[role="dialog"],[aria-modal="true"],.ait-dialog,.next-dialog,.next-overlay-wrapper')]
-      .find((element) => visible(element) && textOfElement(element).includes('退出'));
+  function compactUiText(value) {
+    return String(value || '').replace(/[\s\u200B-\u200D\u2060\uFEFF]/g, '');
+  }
+
+  function findExitDialog() {
+    const matchesExitDialog = (element) => {
+      if (!visible(element)) return false;
+      const text = textOfElement(element);
+      return text.includes('确认申请退出本次活动') || text.includes('请选择退出活动原因');
+    };
+    const primary = [...document.querySelectorAll(
+      '[role="dialog"],[aria-modal="true"],.ait-dialog,.next-dialog,.next-overlay-wrapper,.ant-modal,.arco-modal,.semi-modal'
+    )].filter(matchesExitDialog);
+    const dialogs = (primary.length ? primary : [...document.querySelectorAll(
+      '[class*="dialog"],[class*="Dialog"],[class*="modal"],[class*="Modal"]'
+    )].filter(matchesExitDialog))
+      .sort((left, right) => textOfElement(left).length - textOfElement(right).length);
+    return dialogs[0] || null;
+  }
+
+  function exitPenaltyWarning(dialog = findExitDialog()) {
     if (!dialog) return '';
     const text = textOfElement(dialog);
     let warningText = text;
@@ -1423,38 +1441,82 @@
     return hasRisk ? text.slice(0, 220) : '';
   }
 
+  function findExitReasonOption(dialog, reasonLabel) {
+    if (!dialog) return null;
+    const expected = compactUiText(reasonLabel);
+    const candidates = [...dialog.querySelectorAll(
+      'label,[role="radio"],input[type="radio"],.ait-radio-wrapper,.next-radio-wrapper,.ant-radio-wrapper,.arco-radio,.semi-radio,[class*="radio"],[class*="Radio"],span,div'
+    )]
+      .map((element) => {
+        const text = compactUiText(textOfElement(element) || (element.getAttribute && element.getAttribute('aria-label')));
+        return { element, text };
+      })
+      .filter((item) => item.text === expected || (item.text.startsWith(expected) && item.text.length <= expected.length + 40))
+      .sort((left, right) => left.text.length - right.text.length);
+
+    for (const { element } of candidates) {
+      const target = element.closest && element.closest(
+        'label,[role="radio"],.ait-radio-wrapper,.next-radio-wrapper,.ant-radio-wrapper,.arco-radio,.semi-radio,[class*="radio"],[class*="Radio"]'
+      );
+      const clickable = target || element;
+      if (visible(clickable)) return clickable;
+    }
+    return null;
+  }
+
+  async function waitForExitReason(reasonLabel, timeout = 10000) {
+    let sawDialog = false;
+    for (let elapsed = 0; elapsed < timeout; elapsed += 250) {
+      ensureExitQueueRunning();
+      const dialog = findExitDialog();
+      if (dialog) {
+        sawDialog = true;
+        const warning = exitPenaltyWarning(dialog);
+        if (warning) {
+          throw scriptError('AE_EXIT_REVIEW_REQUIRED', `退出弹窗提示可能存在处罚或限制，请人工确认：${warning}`);
+        }
+        const reason = findExitReasonOption(dialog, reasonLabel);
+        if (reason) return { dialog, reason };
+      }
+      await wait(250);
+    }
+    if (!sawDialog) {
+      throw new Error('点击“申请退出活动”后没有检测到退出弹窗，请人工查看当前页面。');
+    }
+    throw new Error(`退出弹窗里没有找到“${reasonLabel}”。`);
+  }
+
+  async function waitForEnabledExitButton(dialog, timeout = 5000) {
+    let button = null;
+    for (let elapsed = 0; elapsed < timeout; elapsed += 250) {
+      ensureExitQueueRunning();
+      button = [...dialog.querySelectorAll('button')]
+        .find((element) => visible(element) && textOfElement(element) === '退出活动') || null;
+      if (button && !button.disabled && (!button.getAttribute || button.getAttribute('aria-disabled') !== 'true')) {
+        return button;
+      }
+      await wait(250);
+    }
+    if (!button) throw new Error('退出弹窗里没有找到普通“退出活动”按钮。');
+    throw new Error('普通“退出活动”按钮当前不可用，请人工查看平台提示。');
+  }
+
   async function submitQuitByPage(productId) {
     ensureExitQueueRunning();
     const quitButton = findQuitButton(productId);
     if (!quitButton) throw new Error(`没有找到商品 ${productId} 的“申请退出活动”按钮。`);
     quitButton.click();
-    await wait(2500);
+    const { dialog, reason } = await waitForExitReason(STOCKOUT_REASON);
+    ensureExitQueueRunning();
+    reason.click();
     ensureExitQueueRunning();
 
-    const warningBeforeReason = exitPenaltyWarning();
-    if (warningBeforeReason) {
-      throw scriptError('AE_EXIT_REVIEW_REQUIRED', `退出弹窗提示可能存在处罚或限制，请人工确认：${warningBeforeReason}`);
-    }
-
-    const reason = [...document.querySelectorAll('label,.ait-radio-wrapper,.next-radio-wrapper,span,div')]
-      .find((element) => visible(element) && textOfElement(element) === STOCKOUT_REASON);
-    if (!reason) throw new Error('退出弹窗里没有找到“库存不足”。');
-    ensureExitQueueRunning();
-    (reason.closest('label,.ait-radio-wrapper,.next-radio-wrapper') || reason).click();
-    await wait(800);
-    ensureExitQueueRunning();
-
-    const warningBeforeSubmit = exitPenaltyWarning();
+    const warningBeforeSubmit = exitPenaltyWarning(dialog);
     if (warningBeforeSubmit) {
       throw scriptError('AE_EXIT_REVIEW_REQUIRED', `退出弹窗提示可能存在处罚或限制，请人工确认：${warningBeforeSubmit}`);
     }
 
-    const submitButton = [...document.querySelectorAll('button')]
-      .find((element) => visible(element) && textOfElement(element) === '退出活动');
-    if (!submitButton) throw new Error('退出弹窗里没有找到普通“退出活动”按钮。');
-    if (submitButton.disabled || (submitButton.getAttribute && submitButton.getAttribute('aria-disabled') === 'true')) {
-      throw new Error('普通“退出活动”按钮当前不可用，请人工查看平台提示。');
-    }
+    const submitButton = await waitForEnabledExitButton(dialog);
     ensureExitQueueRunning();
     submitButton.click();
     await wait(7000);

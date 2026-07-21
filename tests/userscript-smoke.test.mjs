@@ -16,7 +16,7 @@ class FixedDate extends Date {
 }
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.9\.1/);
+assert.match(metadata, /@version\s+0\.9\.2/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
 assert.match(metadata, /@noframes/);
@@ -172,7 +172,7 @@ async function runCompletionNoticeScenario() {
     completionNotice: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.1'
+    scriptVersion: '0.9.2'
   }));
 
   const completionDocument = {
@@ -669,7 +669,7 @@ async function runExitEntryScenario(
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.1'
+    scriptVersion: '0.9.2'
   }));
 
   const document = {
@@ -873,7 +873,7 @@ async function runBatchFailurePauseScenario() {
     },
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.1'
+    scriptVersion: '0.9.2'
   }));
 
   const document = {
@@ -1054,6 +1054,254 @@ async function runBatchFailurePauseScenario() {
 
 await runBatchFailurePauseScenario();
 
+async function runDelayedStockoutReasonScenario({ penalty = false } = {}) {
+  const productId = '1005012719389785';
+  const campaignId = '63969';
+  const activityId = '30000209924';
+  const storage = new Map();
+  const handlers = {};
+  let root;
+  let dialogOpen = false;
+  let reasonLookupCount = 0;
+  let reasonClicks = 0;
+  let submitted = false;
+
+  const rect = () => ({ width: 180, height: 32 });
+  const makeElement = (text, onClick = () => {}) => ({
+    innerText: text,
+    textContent: text,
+    click: onClick,
+    closest() {
+      return this;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    getAttribute() {
+      return null;
+    },
+    getBoundingClientRect: rect
+  });
+
+  class FakeInput {
+    constructor() {
+      this.placeholder = '支持商品ID/商品名称搜索';
+      this.currentValue = '';
+    }
+    focus() {}
+    dispatchEvent() {
+      return true;
+    }
+    getBoundingClientRect() {
+      return { width: 240, height: 32 };
+    }
+  }
+  Object.defineProperty(FakeInput.prototype, 'value', {
+    get() {
+      return this.currentValue;
+    },
+    set(value) {
+      this.currentValue = value;
+    }
+  });
+  const input = new FakeInput();
+  const registered = makeElement('已报名(355/10027)');
+  const quitButton = makeElement('申请退出活动', () => {
+    dialogOpen = true;
+  });
+  const productRow = makeElement(`商品 ${productId} 申请退出活动`);
+  productRow.querySelectorAll = (selector) => selector.includes('button') ? [quitButton] : [];
+
+  const reasonWrapper = makeElement('库\u200B存不足', () => {
+    reasonClicks += 1;
+  });
+  const reasonText = makeElement('库\u200B存不足');
+  reasonText.closest = () => reasonWrapper;
+  const submitButton = makeElement('退出活动', () => {
+    if (!submitButton.disabled) submitted = true;
+  });
+  Object.defineProperty(submitButton, 'disabled', {
+    get() {
+      return reasonClicks === 0;
+    }
+  });
+  submitButton.getAttribute = (name) => name === 'aria-disabled' && submitButton.disabled ? 'true' : null;
+
+  const reasonCandidates = () => {
+    reasonLookupCount += 1;
+    return reasonLookupCount >= 2 ? [reasonText] : [];
+  };
+  const dialog = makeElement(
+    `确认申请退出本次活动？ ${penalty ? '本次退出将触发平台处罚并限制后续报名。' : '由于活动未开始，本次申请退出活动不触发处罚。'}请选择退出活动原因 修改报名的商品信息 库\u200B存不足 其他`
+  );
+  dialog.querySelectorAll = (selector) => {
+    if (selector === 'button') return [submitButton];
+    if (selector.includes('label') || selector.includes('[role="radio"]') || selector.includes('span,div')) {
+      return reasonCandidates();
+    }
+    return [];
+  };
+
+  const row = {
+    productId,
+    itemId: productId,
+    campaignId,
+    activityId,
+    activityName: '新品闪推-早鸟价85折(俄向不生效)-共享限购-67月S级',
+    catalogActivityName: '新品闪推-早鸟价85折(俄向不生效)-共享限购-67月S级',
+    saleSource: '平台活动',
+    channelId: '1882016'
+  };
+  storage.set('ae.activity.assistant.v4', JSON.stringify({
+    productId,
+    logs: [],
+    plan: [row],
+    scanProductIds: [productId],
+    scanResults: [{ productId, status: 'ready', activityCount: 1 }],
+    exitQueue: [row],
+    exitBatch: {
+      productId,
+      productIds: [productId],
+      productCount: 1,
+      queuedProductCount: 1,
+      skippedProductIds: [],
+      total: 1,
+      successCount: 0,
+      alreadyExitedCount: 0,
+      failedCount: 0,
+      failedRows: []
+    },
+    autoExit: true,
+    channelId: '1882016',
+    scriptVersion: '0.9.2'
+  }));
+
+  const document = {
+    readyState: 'complete',
+    title: '活动报名',
+    body: { innerText: '已报名 商品报名' },
+    documentElement: {
+      appendChild(node) {
+        root = node;
+      }
+    },
+    getElementById() {
+      return null;
+    },
+    createElement() {
+      return createRoot((node) => { root = node; }, handlers);
+    },
+    addEventListener() {},
+    querySelector() {
+      return null;
+    },
+    querySelectorAll(selector) {
+      if (selector === 'input') return [input];
+      if (selector === 'tr,.next-table-row,.ait-table-row,div') return [productRow];
+      if (selector.includes('[role="dialog"]') || selector.includes('[aria-modal="true"]')) {
+        return dialogOpen ? [dialog] : [];
+      }
+      if (selector === 'label,.ait-radio-wrapper,.next-radio-wrapper,span,div') {
+        return dialogOpen ? reasonCandidates() : [];
+      }
+      if (selector === 'button') return dialogOpen ? [submitButton] : [];
+      if (selector.includes('button') || selector.includes('[role="tab"]') || selector.includes('span,div')) {
+        return [registered, quitButton];
+      }
+      return [];
+    }
+  };
+  const window = {
+    location: {
+      search: `?campaignId=${campaignId}&activityId=${activityId}&channelId=1882016`,
+      pathname: '/m_apps/campaigns/peripheral-activity',
+      href: `https://csp.aliexpress.com/m_apps/campaigns/peripheral-activity?campaignId=${campaignId}&activityId=${activityId}&channelId=1882016`
+    },
+    lib: {
+      mtop: {
+        request(options) {
+          if (options.api === 'mtop.global.campaign.merchants.activity.items.query') {
+            return Promise.resolve({
+              ret: ['SUCCESS::调用成功'],
+              data: { dataList: [{ itemId: productId, itemStatus: submitted ? 'OPERATOR_EXIT' : 'PASS' }] }
+            });
+          }
+          return Promise.reject({ ret: ['FAIL::unexpected api'] });
+        }
+      }
+    }
+  };
+  window.self = window;
+  window.top = window;
+
+  class FakeEvent {
+    constructor(type, options) {
+      this.type = type;
+      this.options = options;
+    }
+  }
+
+  vm.runInNewContext(source, {
+    console,
+    Date: FixedDate,
+    Error,
+    JSON,
+    Map,
+    Promise,
+    URLSearchParams,
+    document,
+    window,
+    HTMLInputElement: FakeInput,
+    Event: FakeEvent,
+    KeyboardEvent: FakeEvent,
+    localStorage: {
+      getItem(key) {
+        return storage.get(key) ?? null;
+      },
+      setItem(key, value) {
+        storage.set(key, value);
+      }
+    },
+    getComputedStyle() {
+      return { display: 'block', visibility: 'visible' };
+    },
+    setInterval(callback) {
+      queueMicrotask(callback);
+      return 1;
+    },
+    clearInterval() {},
+    clearTimeout() {},
+    setTimeout(callback, ms) {
+      if (ms < 20000) queueMicrotask(callback);
+      return 1;
+    }
+  });
+
+  for (let index = 0; index < 180; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  const savedState = JSON.parse(storage.get('ae.activity.assistant.v4'));
+  if (penalty) {
+    assert.equal(reasonClicks, 0, 'a penalty warning must pause before selecting a reason');
+    assert.equal(submitted, false, 'a penalty warning must never submit the exit');
+    assert.equal(savedState.autoExit, true);
+    assert.equal(savedState.paused, true);
+    assert.equal(savedState.exitBatch.failedCount, 1);
+    assert.match(root?.innerHTML || '', /可能存在处罚或限制/);
+  } else {
+    assert.equal(reasonClicks, 1, 'the delayed stockout reason should be selected once');
+    assert.equal(submitted, true, 'the ordinary exit button should be submitted after selecting stockout');
+    assert.equal(savedState.autoExit, false);
+    assert.equal(savedState.paused, false);
+    assert.equal(savedState.completionNotice.successCount, 1);
+    assert.doesNotMatch(root?.innerHTML || '', /没有找到“库存不足”/);
+  }
+}
+
+await runDelayedStockoutReasonScenario();
+await runDelayedStockoutReasonScenario({ penalty: true });
+
 async function runUnifiedSequentialEntryScenario() {
   const productId = '1005000000000099';
   const sourceCampaignId = '64662';
@@ -1184,7 +1432,7 @@ async function runUnifiedSequentialEntryScenario() {
     exitFlow: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.1'
+    scriptVersion: '0.9.2'
   }));
 
   const document = {
