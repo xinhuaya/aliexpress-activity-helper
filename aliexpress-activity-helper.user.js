@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.9.0
+// @version      0.9.1
 // @description  速卖通活动助手：批量读取商品管理 SALE 数据中的报名活动，并按页面按钮流程一键普通退出。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
@@ -24,7 +24,7 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.9.0';
+  const SCRIPT_VERSION = '0.9.1';
   const MAX_BATCH_PRODUCTS = 10;
   const UNIFIED_NAVIGATION_TIMEOUT = 45000;
   const UNIFIED_BUTTON_STABLE_MS = 4000;
@@ -35,8 +35,9 @@
 
   const state = {
     productId: '',
-    dryRun: true,
     busy: false,
+    paused: false,
+    pauseReason: '',
     logs: [],
     plan: [],
     scanProductIds: [],
@@ -51,6 +52,7 @@
     scriptVersion: '',
     ...safeJson(localStorage.getItem(STORE_KEY), {})
   };
+  delete state.dryRun;
   delete state.includeEnded;
   const upgradedFromOldVersion = state.scriptVersion !== SCRIPT_VERSION;
   if (upgradedFromOldVersion) {
@@ -63,7 +65,15 @@
     state.exitFlow = null;
     state.completionNotice = null;
     state.autoExit = false;
+    state.paused = false;
+    state.pauseReason = '';
     state.scriptVersion = SCRIPT_VERSION;
+  }
+  state.paused = Boolean(state.paused);
+  state.pauseReason = String(state.pauseReason || '');
+  if (!state.autoExit) {
+    state.paused = false;
+    state.pauseReason = '';
   }
   if (pageChannelId) state.channelId = String(pageChannelId);
 
@@ -81,7 +91,6 @@
   function save() {
     localStorage.setItem(STORE_KEY, JSON.stringify({
       productId: state.productId,
-      dryRun: state.dryRun,
       logs: state.logs.slice(0, 40),
       plan: state.plan,
       scanProductIds: state.scanProductIds,
@@ -91,6 +100,8 @@
       exitFlow: state.exitFlow,
       completionNotice: state.completionNotice,
       autoExit: state.autoExit,
+      paused: state.paused,
+      pauseReason: state.pauseReason,
       lastScanAt: state.lastScanAt,
       channelId: state.channelId,
       scriptVersion: SCRIPT_VERSION
@@ -238,6 +249,29 @@
   function setBusy(value) {
     state.busy = value;
     render();
+  }
+
+  function ensureExitQueueRunning() {
+    if (state.paused) {
+      throw scriptError('AE_USER_PAUSED', state.pauseReason || '用户手动暂停了退出队列。');
+    }
+  }
+
+  function toggleExitQueuePause() {
+    if (!state.autoExit) {
+      log('warn', '当前没有正在运行的退出队列。');
+      return;
+    }
+    if (state.paused) {
+      state.paused = false;
+      state.pauseReason = '';
+      log('ok', '已继续退出队列。');
+      setTimeout(processExitQueue, 0);
+      return;
+    }
+    state.paused = true;
+    state.pauseReason = '用户手动暂停';
+    log('warn', '已手动暂停退出队列，当前页面不会再自动操作。');
   }
 
   function getMtop() {
@@ -895,7 +929,7 @@
       save();
       const readyCount = scanResults.filter((item) => item.status === 'ready').length;
       const skippedCount = scanResults.length - readyCount;
-      log(plan.length ? 'ok' : 'warn', `批量核对完成：${readyCount}/${productIds.length} 个商品有可处理活动，共 ${plan.length} 个活动${skippedCount ? `；${skippedCount} 个商品无活动或扫描失败` : ''}。当前是${state.dryRun ? '预演' : '执行'}模式。`);
+      log(plan.length ? 'ok' : 'warn', `批量核对完成：${readyCount}/${productIds.length} 个商品有可处理活动，共 ${plan.length} 个活动${skippedCount ? `；${skippedCount} 个商品无活动或扫描失败` : ''}。`);
       return true;
     } catch (error) {
       state.plan = [];
@@ -921,11 +955,6 @@
       return;
     }
 
-    if (state.dryRun) {
-      log('warn', '当前是预演模式，不会提交退出。确认列表正确后，取消勾选“预演”，再点“普通退出”。');
-      return;
-    }
-
     const summary = productIds.map((productId) => {
       const count = state.plan.filter((row) => String(row.productId) === productId).length;
       const result = state.scanResults.find((item) => String(item.productId) === productId);
@@ -938,7 +967,8 @@
       `确认普通退出 ${queuedProductIds.length} 个商品的 ${state.plan.length} 个活动吗？\n\n` +
       `${summary}\n\n` +
       '退出原因：库存不足\n' +
-      '单个活动失败会记录并继续；遇到安全验证会停止。\n' +
+      '单个活动失败会自动暂停并停留在当前页面，检查后可继续。\n' +
+      '遇到处罚提示或安全验证也会暂停，不会强行提交。\n' +
       '本脚本不会设置为“不参加活动商品”。'
     );
     if (!ok) {
@@ -963,6 +993,8 @@
     state.exitFlow = null;
     state.completionNotice = null;
     state.autoExit = true;
+    state.paused = false;
+    state.pauseReason = '';
     save();
     log('ok', `已创建批量退出队列：${queuedProductIds.length} 个商品，共 ${state.exitQueue.length} 个活动。`);
     processExitQueue();
@@ -991,6 +1023,7 @@
   async function waitForMtop(timeout = 15000) {
     const start = Date.now();
     while (!getMtop()) {
+      ensureExitQueueRunning();
       if (Date.now() - start > timeout) throw new Error('页面 MTop 客户端加载超时。');
       await wait(500);
     }
@@ -1128,6 +1161,7 @@
 
   async function waitForButtonStartingWithAny(labels, timeout = 7000) {
     for (let elapsed = 0; elapsed < timeout; elapsed += 250) {
+      ensureExitQueueRunning();
       const button = findButtonStartingWithAny(labels);
       if (button) return button;
       await wait(250);
@@ -1143,6 +1177,7 @@
     let candidate = null;
     let stableFor = 0;
     for (let elapsed = 0; elapsed < timeout; elapsed += 250) {
+      ensureExitQueueRunning();
       const current = findButtonStartingWithAny(labels);
       if (current && current === candidate) stableFor += 250;
       else {
@@ -1157,6 +1192,7 @@
 
   async function waitForPathChange(pathname, timeout = UNIFIED_NAVIGATION_TIMEOUT) {
     for (let elapsed = 0; elapsed < timeout; elapsed += 250) {
+      ensureExitQueueRunning();
       if (String(pageWindow.location.pathname || '') !== pathname) return true;
       await wait(250);
     }
@@ -1204,6 +1240,7 @@
   async function waitForActivityProductSearchInput(timeout = 7000) {
     const started = Date.now();
     while (Date.now() - started < timeout) {
+      ensureExitQueueRunning();
       const input = findActivityProductSearchInput();
       if (input) return input;
       await wait(250);
@@ -1228,6 +1265,7 @@
   }
 
   async function ensureUnifiedInboundActivity(row) {
+    ensureExitQueueRunning();
     ensureUnifiedExitFlow(row);
     const path = String(pageWindow.location.pathname || '');
 
@@ -1255,6 +1293,7 @@
         targetActivityId: target.activityId
       });
       log('ok', '店铺资质审核已通过，正在进入第 4 步“入围活动报名”。');
+      ensureExitQueueRunning();
       nextButton.click();
       await waitForPathChange(path);
       return null;
@@ -1267,6 +1306,7 @@
     const labels = ['下一步，开始报名入围活动', '下一步,开始报名入围活动'];
     let nextButton = findButtonStartingWithAny(labels);
     if (!nextButton) {
+      ensureExitQueueRunning();
       const opened = clickExactButton('开始报名活动商品') || clickExactInteractive('商品报名');
       if (!opened) throw new Error('外围活动页没有找到“开始报名活动商品”入口。');
       log('ok', '正在打开第 2 步“外围活动报名”的商品列表。');
@@ -1282,6 +1322,7 @@
       targetActivityId: ''
     });
     log('ok', '正在从外围报名进入第 3 步“店铺资质审核”。');
+    ensureExitQueueRunning();
     nextButton.click();
     await waitForPathChange(path);
     return null;
@@ -1311,6 +1352,7 @@
       ? [startAction, productAction]
       : standardActions;
     for (const action of actions) {
+      ensureExitQueueRunning();
       if (!action.click()) continue;
       log('ok', `正在进入“${action.label}”页面。`);
       await wait(1200);
@@ -1322,15 +1364,20 @@
   }
 
   async function openSignedListAndSearch(row, productId) {
+    ensureExitQueueRunning();
     await dismissBlockingPopups();
+    ensureExitQueueRunning();
     let input = await enterActivitySignupStep(row);
     await dismissBlockingPopups();
+    ensureExitQueueRunning();
     if (clickStartsWith('已报名')) await wait(3500);
     await dismissBlockingPopups();
+    ensureExitQueueRunning();
 
     input = findActivityProductSearchInput() || await waitForActivityProductSearchInput(7000);
     if (!input) throw new Error(activitySearchInputHelp(row));
 
+    ensureExitQueueRunning();
     input.focus();
     setNativeInputValue(input, productId);
     input.dispatchEvent(new KeyboardEvent('keydown', {
@@ -1348,6 +1395,7 @@
       bubbles: true
     }));
     await wait(5500);
+    ensureExitQueueRunning();
   }
 
   function findQuitButton(productId) {
@@ -1362,23 +1410,55 @@
       .find((element) => visible(element) && textOfElement(element) === '申请退出活动');
   }
 
+  function exitPenaltyWarning() {
+    const dialog = [...document.querySelectorAll('[role="dialog"],[aria-modal="true"],.ait-dialog,.next-dialog,.next-overlay-wrapper')]
+      .find((element) => visible(element) && textOfElement(element).includes('退出'));
+    if (!dialog) return '';
+    const text = textOfElement(dialog);
+    let warningText = text;
+    for (const safePhrase of ['不触发处罚', '不会触发处罚', '不产生处罚', '不受处罚', '无需承担处罚']) {
+      warningText = warningText.replaceAll(safePhrase, '');
+    }
+    const hasRisk = /触发(?:平台)?处罚|处罚生效|退出[^。；]{0,30}(?:扣分|违约|处罚|限制)|(?:扣分|违约金|账号处罚|活动处罚|限制后续报名)/.test(warningText);
+    return hasRisk ? text.slice(0, 220) : '';
+  }
+
   async function submitQuitByPage(productId) {
+    ensureExitQueueRunning();
     const quitButton = findQuitButton(productId);
     if (!quitButton) throw new Error(`没有找到商品 ${productId} 的“申请退出活动”按钮。`);
     quitButton.click();
     await wait(2500);
+    ensureExitQueueRunning();
+
+    const warningBeforeReason = exitPenaltyWarning();
+    if (warningBeforeReason) {
+      throw scriptError('AE_EXIT_REVIEW_REQUIRED', `退出弹窗提示可能存在处罚或限制，请人工确认：${warningBeforeReason}`);
+    }
 
     const reason = [...document.querySelectorAll('label,.ait-radio-wrapper,.next-radio-wrapper,span,div')]
       .find((element) => visible(element) && textOfElement(element) === STOCKOUT_REASON);
     if (!reason) throw new Error('退出弹窗里没有找到“库存不足”。');
+    ensureExitQueueRunning();
     (reason.closest('label,.ait-radio-wrapper,.next-radio-wrapper') || reason).click();
     await wait(800);
+    ensureExitQueueRunning();
+
+    const warningBeforeSubmit = exitPenaltyWarning();
+    if (warningBeforeSubmit) {
+      throw scriptError('AE_EXIT_REVIEW_REQUIRED', `退出弹窗提示可能存在处罚或限制，请人工确认：${warningBeforeSubmit}`);
+    }
 
     const submitButton = [...document.querySelectorAll('button')]
       .find((element) => visible(element) && textOfElement(element) === '退出活动');
     if (!submitButton) throw new Error('退出弹窗里没有找到普通“退出活动”按钮。');
+    if (submitButton.disabled || (submitButton.getAttribute && submitButton.getAttribute('aria-disabled') === 'true')) {
+      throw new Error('普通“退出活动”按钮当前不可用，请人工查看平台提示。');
+    }
+    ensureExitQueueRunning();
     submitButton.click();
     await wait(7000);
+    ensureExitQueueRunning();
   }
 
   function createBatchCompletionNotice(batch, extra = {}) {
@@ -1405,10 +1485,12 @@
   }
 
   async function processExitQueue() {
-    if (!state.autoExit || state.busy) return;
+    if (!state.autoExit || state.paused || state.busy) return;
     if (!state.exitQueue.length) {
       const batch = state.exitBatch && typeof state.exitBatch === 'object' ? state.exitBatch : {};
       state.autoExit = false;
+      state.paused = false;
+      state.pauseReason = '';
       state.completionNotice = createBatchCompletionNotice(batch);
       state.exitBatch = null;
       state.exitFlow = null;
@@ -1423,6 +1505,8 @@
     const productId = String(row.productId || state.productId || '').trim();
     if (!productId) {
       state.autoExit = false;
+      state.paused = false;
+      state.pauseReason = '';
       state.exitFlow = null;
       save();
       log('error', '退出队列缺少商品 ID，已停止。');
@@ -1441,8 +1525,10 @@
 
     setBusy(true);
     try {
+      ensureExitQueueRunning();
       await waitForMtop();
       await dismissBlockingPopups();
+      ensureExitQueueRunning();
       let verificationActivity = row;
       if (unifiedInboundEntry) {
         log('ok', '检测到外围与入围共用报名入口；将依次进入外围报名、店铺资质审核和入围报名。');
@@ -1451,6 +1537,7 @@
       }
 
       const before = await querySignedItem(verificationActivity, productId);
+      ensureExitQueueRunning();
       if (before && before.itemStatus === 'OPERATOR_EXIT') {
         state.exitQueue.shift();
         if (state.exitBatch) {
@@ -1467,6 +1554,7 @@
       await submitQuitByPage(productId);
 
       const after = await querySignedItem(verificationActivity, productId);
+      ensureExitQueueRunning();
       if (after && after.itemStatus === 'OPERATOR_EXIT') {
         state.exitQueue.shift();
         if (state.exitBatch) {
@@ -1481,21 +1569,12 @@
       }
     } catch (error) {
       const message = formatError(error);
-      if (error && error.code === 'AE_SECURITY_CHALLENGE') {
-        const batch = state.exitBatch && typeof state.exitBatch === 'object' ? state.exitBatch : {};
-        state.autoExit = false;
-        state.exitQueue = [];
-        state.exitFlow = null;
-        state.completionNotice = createBatchCompletionNotice(batch, {
-          stopped: true,
-          stoppedReason: message
-        });
-        state.exitBatch = null;
-        state.plan = [];
-        state.scanProductIds = [];
-        state.scanResults = [];
-        save();
-        log('error', `批量退出已暂停：${message}`);
+      if (error && error.code === 'AE_USER_PAUSED') {
+        log('warn', `退出队列已暂停：${state.pauseReason || message}。请查看当前页面，确认后点击“继续处理”。`);
+      } else if (error && error.code === 'AE_SECURITY_CHALLENGE') {
+        state.paused = true;
+        state.pauseReason = message;
+        log('error', `检测到平台安全验证，退出队列已暂停并保留当前任务：${message}`);
       } else {
         state.exitQueue.shift();
         if (state.exitBatch) {
@@ -1507,13 +1586,15 @@
             message
           });
         }
+        state.plan = state.plan.filter((item) => exitRowKey(item) !== exitRowKey(row));
         clearExitFlow(row);
-        save();
-        log('error', `商品 ${productId} 的活动处理失败，已记录并继续：${message}`);
+        state.paused = true;
+        state.pauseReason = `${row.activityName || row.activityId || '当前活动'}：${message}`;
+        log('error', `商品 ${productId} 的活动处理失败，队列已自动暂停并停留在当前页面：${message}`);
       }
     } finally {
       setBusy(false);
-      if (state.autoExit) setTimeout(processExitQueue, 1200);
+      if (state.autoExit && !state.paused) setTimeout(processExitQueue, 1200);
     }
   }
 
@@ -1531,10 +1612,11 @@
       .aeaa-btn { height: 34px; border: 1px solid #243b34; border-radius: 6px; background: #273d36; color: white; font-weight: 700; cursor: pointer; white-space: nowrap; padding: 0 12px; }
       .aeaa-btn.secondary { background: #fff; color: #1c2d28; border-color: #a9b4aa; }
       .aeaa-btn.danger { background: #b42318; border-color: #9b1c13; }
+      .aeaa-btn.warning { background: #a15c08; border-color: #824906; }
       .aeaa-btn:disabled { opacity: .55; cursor: not-allowed; }
-      .aeaa-options { display: flex; margin-bottom: 8px; }
-      .aeaa-toggle { flex: 1; height: 30px; border: 1px solid #d0c8ba; border-radius: 6px; background: #fff; display:flex; align-items:center; justify-content:center; gap:6px; font-size:12px; font-weight:700; }
       .aeaa-note { margin: 0 0 8px; color: #56645d; font-size: 12px; line-height: 1.45; }
+      .aeaa-pause-note { margin: 0 0 8px; padding: 9px 10px; border: 1px solid #e2a84a; border-radius: 6px; background: #fff8e8; color: #604813; font-size: 12px; line-height: 1.5; }
+      .aeaa-pause-note strong { display: block; margin-bottom: 2px; color: #7b4300; }
       .aeaa-plan { max-height: 230px; overflow: auto; border: 1px solid #d0c8ba; border-radius: 6px; background: #fff; font-size: 12px; margin-top: 8px; }
       .aeaa-product-head { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; background: #edf3ef; color: #17231f; font-weight: 800; border-bottom: 1px solid #d8ded9; }
       .aeaa-product-head span:last-child { color: #56645d; font-weight: 600; white-space: nowrap; }
@@ -1636,27 +1718,28 @@
 
   function render() {
     if (!root) return;
-    const disabled = state.busy ? 'disabled' : '';
+    const controlsDisabled = state.busy || state.autoExit ? 'disabled' : '';
+    const pauseDisabled = !state.autoExit || (state.paused && state.busy) ? 'disabled' : '';
+    const statusText = state.paused ? '已暂停' : (state.busy ? '处理中...' : (state.autoExit ? '等待处理' : '极速退出'));
     root.innerHTML = `
       <style>${css()}</style>
       ${renderCompletionNotice()}
       <div class="aeaa-box">
         <div class="aeaa-head">
-          <span>AE 活动助手 <small>${state.busy ? '处理中...' : '极速退出'}</small></span>
-          <button class="aeaa-btn secondary" data-act="min" ${disabled}>-</button>
+          <span>AE 活动助手 <small>${statusText}</small></span>
+          <button class="aeaa-btn secondary" data-act="min">-</button>
         </div>
         <div class="aeaa-body">
           <p class="aeaa-note">每行输入一个商品 ID，最多 10 个；也支持用空格或逗号分隔。</p>
           <div class="aeaa-row">
-            <textarea class="aeaa-input" data-field="product" placeholder="商品 ID，每行一个（最多 10 个）" ${disabled}>${escapeHtml(state.productId || '')}</textarea>
+            <textarea class="aeaa-input" data-field="product" placeholder="商品 ID，每行一个（最多 10 个）" ${controlsDisabled}>${escapeHtml(state.productId || '')}</textarea>
           </div>
           <div class="aeaa-row aeaa-actions">
-            <button class="aeaa-btn secondary" data-act="scan" ${disabled}>查报名活动</button>
-            <button class="aeaa-btn danger" data-act="exit" ${disabled}>普通退出</button>
+            <button class="aeaa-btn secondary" data-act="scan" ${controlsDisabled}>查报名活动</button>
+            <button class="aeaa-btn danger" data-act="exit" ${controlsDisabled}>普通退出</button>
+            <button class="aeaa-btn warning" data-act="pause" ${pauseDisabled}>${state.paused ? (state.busy ? '暂停中...' : '继续处理') : '暂停'}</button>
           </div>
-          <div class="aeaa-options">
-            <label class="aeaa-toggle"><input type="checkbox" data-field="dry" ${state.dryRun ? 'checked' : ''} ${disabled}>预演，不提交</label>
-          </div>
+          ${state.paused ? `<div class="aeaa-pause-note"><strong>队列已暂停</strong>${escapeHtml(state.pauseReason || '请查看当前活动页面。')}<br>当前页面不会再自动操作；检查后点击“继续处理”进入下一步。</div>` : ''}
           <div class="aeaa-plan">${renderPlan()}</div>
           <div class="aeaa-log">${state.logs.length ? state.logs.map((item) => `<div class="${escapeHtml(item.level)}">[${escapeHtml(item.time)}] ${escapeHtml(item.message)}</div>`).join('') : '<div>等待操作</div>'}</div>
         </div>
@@ -1670,11 +1753,6 @@
         save();
       }
     });
-    root.addEventListener('change', (event) => {
-      if (event.target.dataset.field === 'dry') state.dryRun = event.target.checked;
-      save();
-      render();
-    });
     root.addEventListener('click', (event) => {
       const button = event.target.closest('[data-act]');
       if (!button) return;
@@ -1685,14 +1763,19 @@
         render();
         return;
       }
-      if (state.busy) return;
-      if (action === 'scan') buildPlan();
-      if (action === 'exit') exitPlan();
+      if (action === 'pause') {
+        toggleExitQueuePause();
+        return;
+      }
       if (action === 'min') {
         const body = root.querySelector('.aeaa-body');
         body.style.display = body.style.display === 'none' ? 'block' : 'none';
         root.style.width = body.style.display === 'none' ? '168px' : '';
+        return;
       }
+      if (state.busy || state.autoExit) return;
+      if (action === 'scan') buildPlan();
+      if (action === 'exit') exitPlan();
     });
   }
 

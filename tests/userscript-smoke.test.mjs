@@ -16,7 +16,7 @@ class FixedDate extends Date {
 }
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.9\.0/);
+assert.match(metadata, /@version\s+0\.9\.1/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
 assert.match(metadata, /@noframes/);
@@ -45,6 +45,13 @@ assert.match(source, /function parseProductIds/);
 assert.match(source, /<textarea class="aeaa-input"/);
 assert.match(source, /exitRowKey\(item\) !== exitRowKey\(row\)/);
 assert.match(source, /failedRows/);
+assert.doesNotMatch(source, /预演，不提交/);
+assert.doesNotMatch(source, /data-field="dry"/);
+assert.match(source, /data-act="pause"/);
+assert.match(source, /继续处理/);
+assert.match(source, /AE_USER_PAUSED/);
+assert.match(source, /exitPenaltyWarning/);
+assert.match(source, /队列已自动暂停并停留在当前页面/);
 
 const frameWindow = { location: { search: '', pathname: '/', href: 'https://csp.aliexpress.com/' } };
 frameWindow.self = frameWindow;
@@ -165,7 +172,7 @@ async function runCompletionNoticeScenario() {
     completionNotice: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.0'
+    scriptVersion: '0.9.1'
   }));
 
   const completionDocument = {
@@ -662,7 +669,7 @@ async function runExitEntryScenario(
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.0'
+    scriptVersion: '0.9.1'
   }));
 
   const document = {
@@ -785,7 +792,7 @@ await runExitEntryScenario('同意并下一步');
 await runExitEntryScenario('入围活动报名', true, '平台活动');
 await runExitEntryScenario('无关按钮', false);
 
-async function runBatchFailureContinuationScenario() {
+async function runBatchFailurePauseScenario() {
   const productIds = ['1005000000000011', '1005000000000012'];
   const campaignId = '64600';
   const activityId = '30000211756';
@@ -866,7 +873,7 @@ async function runBatchFailureContinuationScenario() {
     },
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.0'
+    scriptVersion: '0.9.1'
   }));
 
   const document = {
@@ -961,15 +968,82 @@ async function runBatchFailureContinuationScenario() {
     }
   });
 
+  handlers.click({
+    target: {
+      closest() {
+        return { dataset: { act: 'pause' } };
+      }
+    }
+  });
+  for (let index = 0; index < 10; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  let savedState = JSON.parse(storage.get('ae.activity.assistant.v4'));
+  assert.deepEqual(searchedProductIds, []);
+  assert.equal(registeredClicks, 0);
+  assert.equal(savedState.paused, true);
+  assert.equal(savedState.exitQueue.length, 2);
+  assert.match(root?.innerHTML || '', /用户手动暂停/);
+
+  handlers.click({
+    target: {
+      closest() {
+        return { dataset: { act: 'pause' } };
+      }
+    }
+  });
   for (let index = 0; index < 160; index += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
 
-  const savedState = JSON.parse(storage.get('ae.activity.assistant.v4'));
+  savedState = JSON.parse(storage.get('ae.activity.assistant.v4'));
+  assert.deepEqual(searchedProductIds, [productIds[0]]);
+  assert.equal(registeredClicks, 1);
+  assert.equal(savedState.autoExit, true);
+  assert.equal(savedState.paused, true);
+  assert.equal(savedState.exitQueue.length, 1);
+  assert.equal(savedState.exitQueue[0].productId, productIds[1]);
+  assert.equal(savedState.exitBatch.failedCount, 1);
+  assert.equal(savedState.completionNotice, null);
+  assert.match(root?.innerHTML || '', /队列已暂停/);
+  assert.match(root?.innerHTML || '', /继续处理/);
+  assert.match(root?.innerHTML || '', new RegExp(productIds[0]));
+
+  handlers.click({
+    target: {
+      closest() {
+        return { dataset: { act: 'pause' } };
+      }
+    }
+  });
+  for (let index = 0; index < 160; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  savedState = JSON.parse(storage.get('ae.activity.assistant.v4'));
   assert.deepEqual(searchedProductIds, productIds);
   assert.equal(registeredClicks, 2);
-  assert.equal(savedState.autoExit, false);
+  assert.equal(savedState.autoExit, true);
+  assert.equal(savedState.paused, true);
   assert.equal(savedState.exitQueue.length, 0);
+  assert.equal(savedState.exitBatch.failedCount, 2);
+  assert.equal(savedState.completionNotice, null);
+
+  handlers.click({
+    target: {
+      closest() {
+        return { dataset: { act: 'pause' } };
+      }
+    }
+  });
+  for (let index = 0; index < 20; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  savedState = JSON.parse(storage.get('ae.activity.assistant.v4'));
+  assert.equal(savedState.autoExit, false);
+  assert.equal(savedState.paused, false);
   assert.equal(savedState.completionNotice.failedCount, 2);
   assert.deepEqual(savedState.completionNotice.failedRows.map((row) => row.productId), productIds);
   assert.match(root?.innerHTML || '', /批量退出完成/);
@@ -978,7 +1052,7 @@ async function runBatchFailureContinuationScenario() {
   assert.match(root?.innerHTML || '', new RegExp(productIds[1]));
 }
 
-await runBatchFailureContinuationScenario();
+await runBatchFailurePauseScenario();
 
 async function runUnifiedSequentialEntryScenario() {
   const productId = '1005000000000099';
@@ -1110,7 +1184,7 @@ async function runUnifiedSequentialEntryScenario() {
     exitFlow: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.0'
+    scriptVersion: '0.9.1'
   }));
 
   const document = {
