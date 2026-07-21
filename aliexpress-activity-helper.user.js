@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.9.3
+// @version      0.9.4
 // @description  速卖通活动助手：批量读取商品管理 SALE 数据并一键普通退出；新品闪电推不支持退出，将自动忽略。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
@@ -24,7 +24,7 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.9.3';
+  const SCRIPT_VERSION = '0.9.4';
   const MAX_BATCH_PRODUCTS = 10;
   const UNIFIED_NAVIGATION_TIMEOUT = 45000;
   const UNIFIED_BUTTON_STABLE_MS = 4000;
@@ -1438,16 +1438,48 @@
     ensureExitQueueRunning();
   }
 
-  function findQuitButton(productId) {
+  function activityProductContainers(productId) {
+    const expectedId = String(productId || '').trim();
+    if (!expectedId) return [];
     const containers = [...document.querySelectorAll('tr,.next-table-row,.ait-table-row,div')]
-      .filter((element) => visible(element) && textOfElement(element).includes(productId));
+      .filter((element) => {
+        const assistantRoot = element.closest && element.closest('#aeaa-root');
+        const inAssistant = assistantRoot && assistantRoot.id === 'aeaa-root';
+        return visible(element) && !inAssistant && textOfElement(element).includes(expectedId);
+      })
+      .sort((left, right) => textOfElement(left).length - textOfElement(right).length);
+    return containers;
+  }
+
+  function findQuitButton(productId, containers = activityProductContainers(productId)) {
     for (const row of containers) {
+      if (!row || typeof row.querySelectorAll !== 'function') continue;
       const button = [...row.querySelectorAll('button,a,[role="button"],span')]
         .find((element) => visible(element) && textOfElement(element) === '申请退出活动');
       if (button) return button.closest('button,a,[role="button"]') || button;
     }
-    return [...document.querySelectorAll('button,a,[role="button"]')]
-      .find((element) => visible(element) && textOfElement(element) === '申请退出活动');
+    return null;
+  }
+
+  function hasEmptyActivitySearchResult() {
+    return [...document.querySelectorAll('div,span,p,td')].some((element) => {
+      const assistantRoot = element.closest && element.closest('#aeaa-root');
+      const inAssistant = assistantRoot && assistantRoot.id === 'aeaa-root';
+      if (!visible(element) || inAssistant) return false;
+      const text = compactUiText(textOfElement(element));
+      return text.length <= 40 && /^(暂无数据|暂无内容|没有数据|没有符合条件的商品|未找到相关商品)$/.test(text);
+    });
+  }
+
+  function inspectSignedProductResult(productId) {
+    const containers = activityProductContainers(productId);
+    const focusedTexts = containers.slice(0, 8).map(textOfElement);
+    return {
+      containers,
+      quitButton: findQuitButton(productId, containers),
+      explicitlyExited: focusedTexts.some((text) => /退出活动成功|已退出活动|商家已退出/.test(text)),
+      emptyResult: containers.length === 0 && hasEmptyActivitySearchResult()
+    };
   }
 
   function compactUiText(value) {
@@ -1541,9 +1573,9 @@
     throw new Error('普通“退出活动”按钮当前不可用，请人工查看平台提示。');
   }
 
-  async function submitQuitByPage(productId) {
+  async function submitQuitByPage(productId, matchedQuitButton = null) {
     ensureExitQueueRunning();
-    const quitButton = findQuitButton(productId);
+    const quitButton = matchedQuitButton || findQuitButton(productId);
     if (!quitButton) throw new Error(`没有找到商品 ${productId} 的“申请退出活动”按钮。`);
     quitButton.click();
     const { dialog, reason } = await waitForExitReason(STOCKOUT_REASON);
@@ -1588,6 +1620,18 @@
       completedAt: new Date().toISOString(),
       ...extra
     };
+  }
+
+  function finishAlreadyExitedRow(row, detail = '') {
+    state.exitQueue.shift();
+    if (state.exitBatch) {
+      state.exitBatch.alreadyExitedCount = (Number(state.exitBatch.alreadyExitedCount) || 0) + 1;
+    }
+    state.plan = state.plan.filter((item) => exitRowKey(item) !== exitRowKey(row));
+    clearExitFlow(row);
+    save();
+    const suffix = detail ? `（${detail}）` : '';
+    log('ok', `原本已退出或已不在报名列表：${row.activityName || row.activityId}${suffix}`);
   }
 
   async function processExitQueue() {
@@ -1657,19 +1701,20 @@
       const before = await querySignedItem(verificationActivity, productId);
       ensureExitQueueRunning();
       if (before && before.itemStatus === 'OPERATOR_EXIT') {
-        state.exitQueue.shift();
-        if (state.exitBatch) {
-          state.exitBatch.alreadyExitedCount = (Number(state.exitBatch.alreadyExitedCount) || 0) + 1;
-        }
-        state.plan = state.plan.filter((item) => exitRowKey(item) !== exitRowKey(row));
-        clearExitFlow(row);
-        save();
-        log('ok', `已是退出状态：${row.activityName || row.activityId}`);
+        finishAlreadyExitedRow(row, '接口显示已退出');
         return;
       }
 
       await openSignedListAndSearch(row, productId);
-      await submitQuitByPage(productId);
+      const signedResult = inspectSignedProductResult(productId);
+      if (signedResult.explicitlyExited || (!before && signedResult.emptyResult)) {
+        finishAlreadyExitedRow(
+          row,
+          signedResult.explicitlyExited ? '页面显示退出活动成功' : '已报名列表中没有该商品'
+        );
+        return;
+      }
+      await submitQuitByPage(productId, signedResult.quitButton);
 
       const after = await querySignedItem(verificationActivity, productId);
       ensureExitQueueRunning();

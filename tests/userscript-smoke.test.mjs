@@ -16,7 +16,7 @@ class FixedDate extends Date {
 }
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.9\.3/);
+assert.match(metadata, /@version\s+0\.9\.4/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
 assert.match(metadata, /@noframes/);
@@ -174,7 +174,7 @@ async function runCompletionNoticeScenario() {
     completionNotice: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.3'
+    scriptVersion: '0.9.4'
   }));
 
   const completionDocument = {
@@ -717,7 +717,7 @@ async function runExitEntryScenario(
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.3'
+    scriptVersion: '0.9.4'
   }));
 
   const document = {
@@ -840,6 +840,218 @@ await runExitEntryScenario('同意并下一步');
 await runExitEntryScenario('入围活动报名', true, '平台活动');
 await runExitEntryScenario('无关按钮', false);
 
+async function runSaleResidueScenario(mode) {
+  const productId = '1005012544334149';
+  const campaignId = '64664';
+  const activityId = '30000211734';
+  const storage = new Map();
+  const handlers = {};
+  let root;
+  let unrelatedQuitClicks = 0;
+
+  class FakeInput {
+    constructor() {
+      this.placeholder = '支持商品ID搜索';
+      this.currentValue = '';
+    }
+    focus() {}
+    dispatchEvent() {
+      return true;
+    }
+    getBoundingClientRect() {
+      return { width: 240, height: 32 };
+    }
+  }
+  Object.defineProperty(FakeInput.prototype, 'value', {
+    get() {
+      return this.currentValue;
+    },
+    set(value) {
+      this.currentValue = value;
+    }
+  });
+
+  const makeElement = (text, onClick = () => {}) => ({
+    innerText: text,
+    textContent: text,
+    click: onClick,
+    closest() {
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    getBoundingClientRect() {
+      return { width: 180, height: 32 };
+    }
+  });
+  const input = new FakeInput();
+  const registered = makeElement('已报名(1)');
+  const emptyState = makeElement('暂无数据');
+  const productRow = makeElement(
+    mode === 'explicit-exit'
+      ? `商品 ID: ${productId} 审核未通过 退出活动成功`
+      : `商品 ID: ${productId} 审核通过`
+  );
+  const unrelatedQuitButton = makeElement('申请退出活动', () => {
+    unrelatedQuitClicks += 1;
+  });
+  const row = {
+    productId,
+    itemId: productId,
+    campaignId,
+    activityId,
+    activityName: '【2026年8月Choice Day】外围活动-欧盟地区',
+    catalogActivityName: '【2026年8月Choice Day】外围活动-欧盟地区',
+    saleSource: '店铺活动',
+    channelId: '9999999'
+  };
+  storage.set('ae.activity.assistant.v4', JSON.stringify({
+    productId,
+    logs: [],
+    plan: [row],
+    scanProductIds: [productId],
+    scanResults: [{ productId, status: 'ready', activityCount: 1 }],
+    exitQueue: [row],
+    exitBatch: {
+      productId,
+      productIds: [productId],
+      productCount: 1,
+      queuedProductCount: 1,
+      total: 1,
+      successCount: 0,
+      alreadyExitedCount: 0,
+      failedCount: 0,
+      failedRows: []
+    },
+    autoExit: true,
+    channelId: '9999999',
+    scriptVersion: '0.9.4'
+  }));
+
+  const document = {
+    readyState: 'complete',
+    title: '活动报名',
+    body: { innerText: '大促活动指南 外围活动报名 商品报名' },
+    documentElement: {
+      appendChild(node) {
+        root = node;
+      }
+    },
+    getElementById() {
+      return null;
+    },
+    createElement() {
+      return createRoot((node) => { root = node; }, handlers);
+    },
+    addEventListener() {},
+    querySelector() {
+      return null;
+    },
+    querySelectorAll(selector) {
+      if (selector === 'input') return [input];
+      if (selector === 'tr,.next-table-row,.ait-table-row,div') {
+        return mode === 'empty-result' ? [] : [productRow];
+      }
+      if (selector === 'div,span,p,td') return mode === 'empty-result' ? [emptyState] : [];
+      if (selector.includes('[role="dialog"]') || selector.includes('[aria-modal="true"]')) return [];
+      if (selector.includes('button') || selector.includes('[role="tab"]') || selector.includes('span,div')) {
+        return [registered, unrelatedQuitButton];
+      }
+      return [];
+    }
+  };
+  const window = {
+    location: {
+      search: `?campaignId=${campaignId}&activityId=${activityId}&channelId=9999999`,
+      pathname: '/m_apps/campaigns/peripheral-activity',
+      href: `https://csp.aliexpress.com/m_apps/campaigns/peripheral-activity?campaignId=${campaignId}&activityId=${activityId}&channelId=9999999`
+    },
+    lib: {
+      mtop: {
+        request(options) {
+          if (options.api === 'mtop.global.campaign.merchants.activity.items.query') {
+            const dataList = mode === 'empty-result'
+              ? []
+              : [{ itemId: productId, itemStatus: 'PASS' }];
+            return Promise.resolve({ ret: ['SUCCESS::调用成功'], data: { dataList } });
+          }
+          return Promise.reject({ ret: ['FAIL::unexpected api'] });
+        }
+      }
+    }
+  };
+  window.self = window;
+  window.top = window;
+
+  class FakeEvent {
+    constructor(type, options) {
+      this.type = type;
+      this.options = options;
+    }
+  }
+
+  vm.runInNewContext(source, {
+    console,
+    Date: FixedDate,
+    Error,
+    JSON,
+    Map,
+    Promise,
+    URLSearchParams,
+    document,
+    window,
+    HTMLInputElement: FakeInput,
+    Event: FakeEvent,
+    KeyboardEvent: FakeEvent,
+    localStorage: {
+      getItem(key) {
+        return storage.get(key) ?? null;
+      },
+      setItem(key, value) {
+        storage.set(key, value);
+      }
+    },
+    getComputedStyle() {
+      return { display: 'block', visibility: 'visible' };
+    },
+    setInterval(callback) {
+      queueMicrotask(callback);
+      return 1;
+    },
+    clearInterval() {},
+    clearTimeout() {},
+    setTimeout(callback, ms) {
+      if (ms < 20000) queueMicrotask(callback);
+      return 1;
+    }
+  });
+
+  for (let index = 0; index < 160; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  const savedState = JSON.parse(storage.get('ae.activity.assistant.v4'));
+  assert.equal(unrelatedQuitClicks, 0, 'a quit button outside the matching product row must never be clicked');
+  if (mode === 'missing-button') {
+    assert.equal(savedState.paused, true);
+    assert.equal(savedState.exitBatch.failedCount, 1);
+    assert.match(savedState.pauseReason, /没有找到商品 1005012544334149 的“申请退出活动”按钮/);
+  } else {
+    assert.equal(savedState.autoExit, false);
+    assert.equal(savedState.completionNotice.alreadyExitedCount, 1);
+    assert.equal(savedState.completionNotice.failedCount, 0);
+    assert.equal(
+      savedState.logs.some((item) => item.message.includes('原本已退出或已不在报名列表')),
+      true
+    );
+  }
+}
+
+await runSaleResidueScenario('empty-result');
+await runSaleResidueScenario('explicit-exit');
+await runSaleResidueScenario('missing-button');
+
 async function runBatchFailurePauseScenario() {
   const productIds = ['1005000000000011', '1005000000000012'];
   const campaignId = '64600';
@@ -921,7 +1133,7 @@ async function runBatchFailurePauseScenario() {
     },
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.3'
+    scriptVersion: '0.9.4'
   }));
 
   const document = {
@@ -1221,7 +1433,7 @@ async function runDelayedStockoutReasonScenario({ penalty = false } = {}) {
     },
     autoExit: true,
     channelId: '1882016',
-    scriptVersion: '0.9.3'
+    scriptVersion: '0.9.4'
   }));
 
   const document = {
@@ -1480,7 +1692,7 @@ async function runUnifiedSequentialEntryScenario() {
     exitFlow: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.3'
+    scriptVersion: '0.9.4'
   }));
 
   const document = {
