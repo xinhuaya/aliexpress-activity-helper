@@ -16,7 +16,7 @@ class FixedDate extends Date {
 }
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.9\.7/);
+assert.match(metadata, /@version\s+0\.9\.8/);
 assert.match(metadata, /@grant\s+GM_notification/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
@@ -52,7 +52,9 @@ assert.match(source, /failedRows/);
 assert.doesNotMatch(source, /预演，不提交/);
 assert.doesNotMatch(source, /data-field="dry"/);
 assert.match(source, /data-act="pause"/);
+assert.match(source, /data-act="stop"/);
 assert.match(source, /继续处理/);
+assert.match(source, /结束本次/);
 assert.match(source, /AE_USER_PAUSED/);
 assert.match(source, /exitPenaltyWarning/);
 assert.match(source, /队列已自动暂停并停留在当前页面/);
@@ -152,6 +154,127 @@ vm.runInNewContext(source, {
 assert.equal(mountedRoot?.id, 'aeaa-root');
 assert.match(mountedRoot?.innerHTML || '', /AE 活动助手/);
 
+async function runStopPausedQueueScenario() {
+  const productId = '1005000000000077';
+  const queueStorage = new Map();
+  const queueHandlers = {};
+  let queueRoot;
+  let confirmCount = 0;
+  const rows = [
+    { productId, activityId: '30000000001', campaignId: '64001', activityName: '剩余活动一', saleSource: '店铺活动' },
+    { productId, activityId: '30000000002', campaignId: '64002', activityName: '剩余活动二', saleSource: '平台活动' }
+  ];
+  queueStorage.set('ae.activity.assistant.v4', JSON.stringify({
+    productId,
+    logs: [],
+    plan: rows,
+    scanProductIds: [productId],
+    scanResults: [{ productId, status: 'ready', activityCount: 3 }],
+    exitQueue: rows,
+    exitBatch: {
+      productId,
+      productIds: [productId],
+      productCount: 1,
+      total: 3,
+      successCount: 1,
+      alreadyExitedCount: 0,
+      failedCount: 0,
+      failedRows: []
+    },
+    exitFlow: null,
+    completionNotice: null,
+    autoExit: true,
+    paused: true,
+    pauseReason: '用户手动暂停',
+    channelId: '9999999',
+    scriptVersion: '0.9.8'
+  }));
+
+  const queueDocument = {
+    readyState: 'complete',
+    title: '活动报名',
+    visibilityState: 'visible',
+    documentElement: {
+      appendChild(node) {
+        queueRoot = node;
+      }
+    },
+    getElementById() {
+      return null;
+    },
+    createElement() {
+      return createRoot((node) => { queueRoot = node; }, queueHandlers);
+    },
+    addEventListener() {},
+    querySelector() {
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    }
+  };
+  const queueWindow = {
+    location: {
+      search: '?channelId=9999999',
+      pathname: '/m_apps/campaigns/home-page',
+      href: 'https://csp.aliexpress.com/m_apps/campaigns/home-page?channelId=9999999'
+    },
+    confirm() {
+      confirmCount += 1;
+      return true;
+    },
+    addEventListener() {}
+  };
+  queueWindow.self = queueWindow;
+  queueWindow.top = queueWindow;
+
+  vm.runInNewContext(source, {
+    console,
+    Date: FixedDate,
+    Error,
+    JSON,
+    URLSearchParams,
+    document: queueDocument,
+    window: queueWindow,
+    localStorage: {
+      getItem(key) {
+        return queueStorage.get(key) ?? null;
+      },
+      setItem(key, value) {
+        queueStorage.set(key, value);
+      }
+    },
+    setInterval() {
+      return 1;
+    },
+    clearInterval() {},
+    setTimeout() {
+      return 1;
+    }
+  });
+
+  assert.match(queueRoot?.innerHTML || '', /结束本次/);
+  queueHandlers.click({
+    target: {
+      closest() {
+        return { dataset: { act: 'stop' } };
+      }
+    }
+  });
+
+  const stoppedState = JSON.parse(queueStorage.get('ae.activity.assistant.v4'));
+  assert.equal(confirmCount, 1);
+  assert.equal(stoppedState.autoExit, false);
+  assert.equal(stoppedState.paused, false);
+  assert.equal(stoppedState.productId, '');
+  assert.deepEqual(stoppedState.plan, []);
+  assert.deepEqual(stoppedState.exitQueue, []);
+  assert.equal(stoppedState.exitBatch, null);
+  assert.match(stoppedState.logs[0].message, /已结束本次退出任务/);
+}
+
+await runStopPausedQueueScenario();
+
 async function runCompletionNoticeScenario() {
   const productIds = ['1005000000000088', '1005000000000089'];
   const completionStorage = new Map();
@@ -181,7 +304,7 @@ async function runCompletionNoticeScenario() {
     completionNotice: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.7'
+    scriptVersion: '0.9.8'
   }));
 
   const completionDocument = {
@@ -761,7 +884,7 @@ async function runExitEntryScenario(
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.7'
+    scriptVersion: '0.9.8'
   }));
 
   const document = {
@@ -977,7 +1100,7 @@ async function runSaleResidueScenario(mode) {
     },
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.7'
+    scriptVersion: '0.9.8'
   }));
 
   const document = {
@@ -1203,7 +1326,7 @@ async function runBatchFailurePauseScenario() {
     },
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.7'
+    scriptVersion: '0.9.8'
   }));
 
   const document = {
@@ -1503,7 +1626,7 @@ async function runDelayedStockoutReasonScenario({ penalty = false } = {}) {
     },
     autoExit: true,
     channelId: '1882016',
-    scriptVersion: '0.9.7'
+    scriptVersion: '0.9.8'
   }));
 
   const document = {
@@ -1764,7 +1887,7 @@ async function runUnifiedSequentialEntryScenario() {
     exitFlow: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.7'
+    scriptVersion: '0.9.8'
   }));
 
   const document = {

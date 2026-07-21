@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.9.7
+// @version      0.9.8
 // @description  速卖通活动助手：批量读取商品管理 SALE 数据并一键普通退出；新品闪电推不支持退出，将自动忽略。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
@@ -25,7 +25,7 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.9.7';
+  const SCRIPT_VERSION = '0.9.8';
   const MAX_BATCH_PRODUCTS = 10;
   const UNIFIED_NAVIGATION_TIMEOUT = 45000;
   const UNIFIED_BUTTON_STABLE_MS = 4000;
@@ -368,6 +368,48 @@
     state.paused = true;
     state.pauseReason = '用户手动暂停';
     log('warn', '已手动暂停退出队列，当前页面不会再自动操作。');
+  }
+
+  function stopExitQueue() {
+    if (!state.autoExit) {
+      log('warn', '当前没有正在运行的退出队列。');
+      return;
+    }
+    if (!state.paused || state.busy) {
+      log('warn', '请先暂停队列，并等待当前操作完全停止后再结束本次任务。');
+      return;
+    }
+
+    const batch = state.exitBatch && typeof state.exitBatch === 'object' ? state.exitBatch : {};
+    const processed = (Number(batch.successCount) || 0) +
+      (Number(batch.alreadyExitedCount) || 0) +
+      (Number(batch.failedCount) || 0) +
+      (Number(batch.ignoredNewProductFlashCount) || 0);
+    const remaining = state.exitQueue.length;
+    const confirmed = window.confirm(
+      `确认结束本次退出任务吗？\n\n` +
+      `已处理：${processed} 个活动\n` +
+      `剩余：${remaining} 个活动（将全部取消）\n\n` +
+      '结束后可以立即输入新的商品 ID。'
+    );
+    if (!confirmed) return;
+
+    stopAttentionAlert();
+    state.productId = '';
+    state.plan = [];
+    state.scanProductIds = [];
+    state.scanResults = [];
+    state.exitQueue = [];
+    state.exitBatch = null;
+    state.exitFlow = null;
+    state.completionNotice = null;
+    state.autoExit = false;
+    state.paused = false;
+    state.pauseReason = '';
+    state.busy = false;
+    state.lastScanAt = '';
+    save();
+    log('warn', `已结束本次退出任务：已处理 ${processed} 个活动，取消剩余 ${remaining} 个活动。现在可以输入新的商品 ID。`);
   }
 
   function getMtop() {
@@ -2104,6 +2146,7 @@
     if (!root) return;
     const controlsDisabled = state.busy || state.autoExit ? 'disabled' : '';
     const pauseDisabled = !state.autoExit || (state.paused && state.busy) ? 'disabled' : '';
+    const stopDisabled = !state.autoExit || !state.paused || state.busy ? 'disabled' : '';
     const statusText = state.paused ? '已暂停' : (state.busy ? '处理中...' : (state.autoExit ? '等待处理' : '极速退出'));
     root.innerHTML = `
       <style>${css()}</style>
@@ -2122,8 +2165,9 @@
             <button class="aeaa-btn secondary" data-act="scan" ${controlsDisabled}>查报名活动</button>
             <button class="aeaa-btn danger" data-act="exit" ${controlsDisabled}>普通退出</button>
             <button class="aeaa-btn warning" data-act="pause" ${pauseDisabled}>${state.paused ? (state.busy ? '暂停中...' : '继续处理') : '暂停'}</button>
+            <button class="aeaa-btn secondary" data-act="stop" ${stopDisabled}>结束本次</button>
           </div>
-          ${state.paused ? `<div class="aeaa-pause-note"><strong>队列已暂停</strong>${escapeHtml(state.pauseReason || '请查看当前活动页面。')}<br>当前页面不会再自动操作；检查后点击“继续处理”进入下一步。</div>` : ''}
+          ${state.paused ? `<div class="aeaa-pause-note"><strong>队列已暂停</strong>${escapeHtml(state.pauseReason || '请查看当前活动页面。')}<br>检查后可点“继续处理”；需要换商品时，点“结束本次”清空剩余队列。</div>` : ''}
           <div class="aeaa-plan">${renderPlan()}</div>
           <div class="aeaa-log">${state.logs.length ? state.logs.map((item) => `<div class="${escapeHtml(item.level)}">[${escapeHtml(item.time)}] ${escapeHtml(item.message)}</div>`).join('') : '<div>等待操作</div>'}</div>
         </div>
@@ -2150,6 +2194,10 @@
       }
       if (action === 'pause') {
         toggleExitQueuePause();
+        return;
+      }
+      if (action === 'stop') {
+        stopExitQueue();
         return;
       }
       if (action === 'min') {
