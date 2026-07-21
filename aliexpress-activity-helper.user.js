@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.9.5
+// @version      0.9.6
 // @description  速卖通活动助手：批量读取商品管理 SALE 数据并一键普通退出；新品闪电推不支持退出，将自动忽略。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
@@ -14,6 +14,7 @@
 // @match        https://sell.aliexpress.com/*
 // @match        https://sale.aliexpress.com/*
 // @grant        unsafeWindow
+// @grant        GM_notification
 // @run-at       document-start
 // @noframes
 // ==/UserScript==
@@ -24,7 +25,7 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.9.5';
+  const SCRIPT_VERSION = '0.9.6';
   const MAX_BATCH_PRODUCTS = 10;
   const UNIFIED_NAVIGATION_TIMEOUT = 45000;
   const UNIFIED_BUTTON_STABLE_MS = 4000;
@@ -79,6 +80,8 @@
 
   let root;
   let mtopReadyLogged = false;
+  let attentionTimer = null;
+  let attentionBaseTitle = '';
 
   function safeJson(text, fallback) {
     try {
@@ -139,6 +142,97 @@
     const error = new Error(message);
     error.code = code;
     return error;
+  }
+
+  function stopAttentionAlert() {
+    if (attentionTimer !== null) {
+      clearInterval(attentionTimer);
+      attentionTimer = null;
+    }
+    if (attentionBaseTitle) document.title = attentionBaseTitle;
+    attentionBaseTitle = '';
+  }
+
+  function startTitleAttention(label) {
+    stopAttentionAlert();
+    attentionBaseTitle = String(document.title || '速卖通卖家后台')
+      .replace(/^【(?:退出完成|需要处理|需要复查)】\s*/, '');
+    let highlighted = true;
+    const updateTitle = () => {
+      document.title = highlighted ? `【${label}】${attentionBaseTitle}` : attentionBaseTitle;
+    };
+    updateTitle();
+    attentionTimer = setInterval(() => {
+      highlighted = !highlighted;
+      updateTitle();
+    }, 900);
+  }
+
+  function showDesktopNotification(title, text) {
+    const onClick = () => {
+      if (pageWindow && typeof pageWindow.focus === 'function') pageWindow.focus();
+      stopAttentionAlert();
+    };
+    try {
+      if (typeof GM_notification === 'function') {
+        GM_notification({ title, text, timeout: 15000, onclick: onClick });
+        return true;
+      }
+      const NotificationApi = pageWindow && pageWindow.Notification;
+      if (NotificationApi && NotificationApi.permission === 'granted') {
+        const notification = new NotificationApi(title, { body: text });
+        notification.onclick = onClick;
+        setTimeout(() => notification.close(), 15000);
+        return true;
+      }
+    } catch {
+      // The flashing page title remains available when desktop notifications are blocked.
+    }
+    return false;
+  }
+
+  function announceAttention({ title, text, tabLabel }) {
+    showDesktopNotification(title, text);
+    startTitleAttention(tabLabel);
+  }
+
+  function announceBatchCompletion(notice) {
+    const productCount = Number(notice && notice.productCount) || 0;
+    const total = Number(notice && notice.total) || 0;
+    const successCount = Number(notice && notice.successCount) || 0;
+    const alreadyExitedCount = Number(notice && notice.alreadyExitedCount) || 0;
+    const failedCount = Number(notice && notice.failedCount) || 0;
+    const skippedCount = Array.isArray(notice && notice.skippedProductIds)
+      ? notice.skippedProductIds.length
+      : 0;
+    const needsReview = failedCount + skippedCount > 0;
+    announceAttention({
+      title: needsReview ? 'AE 活动助手：处理完成，需复查' : 'AE 活动助手：退出完成',
+      text: `${productCount} 个商品，共 ${total} 个活动已处理。退出成功 ${successCount}，原本已退出 ${alreadyExitedCount}，需复查 ${failedCount + skippedCount}。`,
+      tabLabel: needsReview ? '需要复查' : '退出完成'
+    });
+  }
+
+  function announceQueuePaused(productId, reason) {
+    const subject = String(productId || '').trim();
+    const detail = String(reason || '请返回当前页面检查。').trim();
+    announceAttention({
+      title: 'AE 活动助手：队列已暂停',
+      text: `${subject ? `商品 ${subject} ` : ''}需要处理：${detail}`.slice(0, 280),
+      tabLabel: '需要处理'
+    });
+  }
+
+  function bindAttentionAcknowledgement() {
+    if (pageWindow && typeof pageWindow.addEventListener === 'function') {
+      pageWindow.addEventListener('focus', stopAttentionAlert);
+    }
+    if (typeof document.addEventListener === 'function') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') stopAttentionAlert();
+      });
+      document.addEventListener('pointerdown', stopAttentionAlert, true);
+    }
   }
 
   function isVisibleElement(element) {
@@ -1740,6 +1834,7 @@
       state.scanProductIds = [];
       state.scanResults = [];
       log('ok', `批量退出队列已完成：${state.completionNotice.productCount} 个商品，共 ${state.completionNotice.total} 个活动。请刷新商品管理页复查。`);
+      announceBatchCompletion(state.completionNotice);
       return;
     }
 
@@ -1752,6 +1847,7 @@
       state.exitFlow = null;
       save();
       log('error', '退出队列缺少商品 ID，已停止。');
+      announceQueuePaused('', '退出队列缺少商品 ID，已停止。');
       return;
     }
 
@@ -1830,6 +1926,7 @@
         state.paused = true;
         state.pauseReason = message;
         log('error', `检测到平台安全验证，退出队列已暂停并保留当前任务：${message}`);
+        announceQueuePaused(productId, message);
       } else {
         state.exitQueue.shift();
         if (state.exitBatch) {
@@ -1846,6 +1943,7 @@
         state.paused = true;
         state.pauseReason = `${row.activityName || row.activityId || '当前活动'}：${message}`;
         log('error', `商品 ${productId} 的活动处理失败，队列已自动暂停并停留在当前页面：${message}`);
+        announceQueuePaused(productId, message);
       }
     } finally {
       setBusy(false);
@@ -2014,6 +2112,7 @@
       if (!button) return;
       const action = button.dataset.act;
       if (action === 'dismiss-completion') {
+        stopAttentionAlert();
         state.completionNotice = null;
         save();
         render();
@@ -2041,6 +2140,7 @@
     root.id = 'aeaa-root';
     document.documentElement.appendChild(root);
     bind();
+    bindAttentionAcknowledgement();
     render();
     log('ok', upgradedFromOldVersion
       ? `面板已升级到 ${SCRIPT_VERSION}，旧版扫描队列已清空。新品闪电推不支持退出，扫描时会自动忽略。`

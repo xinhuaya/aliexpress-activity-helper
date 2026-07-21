@@ -16,7 +16,8 @@ class FixedDate extends Date {
 }
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.9\.5/);
+assert.match(metadata, /@version\s+0\.9\.6/);
+assert.match(metadata, /@grant\s+GM_notification/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
 assert.match(metadata, /@noframes/);
@@ -155,7 +156,10 @@ async function runCompletionNoticeScenario() {
   const productIds = ['1005000000000088', '1005000000000089'];
   const completionStorage = new Map();
   const completionHandlers = {};
+  const completionNotifications = [];
+  const completionTitleHistory = [];
   let completionRoot;
+  let completionTitle = '活动报名';
   completionStorage.set('ae.activity.assistant.v4', JSON.stringify({
     productId: productIds.join('\n'),
     dryRun: false,
@@ -177,7 +181,7 @@ async function runCompletionNoticeScenario() {
     completionNotice: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.5'
+    scriptVersion: '0.9.6'
   }));
 
   const completionDocument = {
@@ -201,6 +205,15 @@ async function runCompletionNoticeScenario() {
       return [];
     }
   };
+  Object.defineProperty(completionDocument, 'title', {
+    get() {
+      return completionTitle;
+    },
+    set(value) {
+      completionTitle = String(value);
+      completionTitleHistory.push(completionTitle);
+    }
+  });
   const completionWindow = {
     location: {
       search: '?channelId=9999999',
@@ -221,6 +234,9 @@ async function runCompletionNoticeScenario() {
     URLSearchParams,
     document: completionDocument,
     window: completionWindow,
+    GM_notification(options) {
+      completionNotifications.push(options);
+    },
     localStorage: {
       getItem(key) {
         return completionStorage.get(key) ?? null;
@@ -248,6 +264,14 @@ async function runCompletionNoticeScenario() {
   assert.match(completionRoot?.innerHTML || '', /2 个商品的退出队列已全部处理/);
   assert.match(completionRoot?.innerHTML || '', />3<\/span><span class="aeaa-completion-label">退出成功/);
   assert.match(completionRoot?.innerHTML || '', /原本已退出 1/);
+  assert.equal(completionNotifications.length, 1, 'batch completion should send one desktop notification');
+  assert.equal(completionNotifications[0].title, 'AE 活动助手：退出完成');
+  assert.match(completionNotifications[0].text, /2 个商品，共 4 个活动/);
+  assert.equal(
+    completionTitleHistory.some((title) => title.includes('【退出完成】')),
+    true,
+    'batch completion should flash the page title'
+  );
 
   completionHandlers.click({
     target: {
@@ -737,7 +761,7 @@ async function runExitEntryScenario(
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.5'
+    scriptVersion: '0.9.6'
   }));
 
   const document = {
@@ -870,8 +894,11 @@ async function runSaleResidueScenario(mode) {
   const activityId = '30000211734';
   const storage = new Map();
   const handlers = {};
+  const desktopNotifications = [];
+  const titleHistory = [];
   let root;
   let unrelatedQuitClicks = 0;
+  let currentTitle = '活动报名';
 
   class FakeInput {
     constructor() {
@@ -950,12 +977,11 @@ async function runSaleResidueScenario(mode) {
     },
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.5'
+    scriptVersion: '0.9.6'
   }));
 
   const document = {
     readyState: 'complete',
-    title: '活动报名',
     body: { innerText: '大促活动指南 外围活动报名 商品报名' },
     documentElement: {
       appendChild(node) {
@@ -985,6 +1011,15 @@ async function runSaleResidueScenario(mode) {
       return [];
     }
   };
+  Object.defineProperty(document, 'title', {
+    get() {
+      return currentTitle;
+    },
+    set(value) {
+      currentTitle = String(value);
+      titleHistory.push(currentTitle);
+    }
+  });
   const window = {
     location: {
       search: `?campaignId=${campaignId}&activityId=${activityId}&channelId=9999999`,
@@ -1028,6 +1063,9 @@ async function runSaleResidueScenario(mode) {
     HTMLInputElement: FakeInput,
     Event: FakeEvent,
     KeyboardEvent: FakeEvent,
+    GM_notification(options) {
+      desktopNotifications.push(options);
+    },
     localStorage: {
       getItem(key) {
         return storage.get(key) ?? null;
@@ -1061,6 +1099,14 @@ async function runSaleResidueScenario(mode) {
     assert.equal(savedState.paused, true);
     assert.equal(savedState.exitBatch.failedCount, 1);
     assert.match(savedState.pauseReason, /没有找到商品 1005012544334149 的“申请退出活动”按钮/);
+    assert.equal(desktopNotifications.length, 1, 'automatic pause should send one desktop notification');
+    assert.equal(desktopNotifications[0].title, 'AE 活动助手：队列已暂停');
+    assert.match(desktopNotifications[0].text, /1005012544334149/);
+    assert.equal(
+      titleHistory.some((title) => title.includes('【需要处理】')),
+      true,
+      'automatic pause should flash the page title'
+    );
   } else {
     assert.equal(savedState.autoExit, false);
     assert.equal(savedState.completionNotice.alreadyExitedCount, 1);
@@ -1157,7 +1203,7 @@ async function runBatchFailurePauseScenario() {
     },
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.5'
+    scriptVersion: '0.9.6'
   }));
 
   const document = {
@@ -1457,7 +1503,7 @@ async function runDelayedStockoutReasonScenario({ penalty = false } = {}) {
     },
     autoExit: true,
     channelId: '1882016',
-    scriptVersion: '0.9.5'
+    scriptVersion: '0.9.6'
   }));
 
   const document = {
@@ -1716,7 +1762,7 @@ async function runUnifiedSequentialEntryScenario() {
     exitFlow: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.5'
+    scriptVersion: '0.9.6'
   }));
 
   const document = {
