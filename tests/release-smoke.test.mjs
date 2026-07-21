@@ -13,14 +13,15 @@ const latest = JSON.parse(fs.readFileSync(path.join(rootDir, 'dist', 'latest.jso
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
 assert.equal(publishedScript, source);
 assert.equal(publishedMetadata.trim(), metadata);
-assert.equal(latest.version, '0.9.8');
+assert.equal(latest.version, '0.9.9');
 assert.equal(latest.updateUrl, 'https://xinhuaya.github.io/aliexpress-activity-helper/stable/aliexpress-activity-helper.meta.js');
 assert.equal(latest.downloadUrl, 'https://xinhuaya.github.io/aliexpress-activity-helper/stable/aliexpress-activity-helper.user.js');
-assert.match(indexHtml, /当前稳定版 <strong>v0\.9\.8<\/strong>/);
+assert.match(indexHtml, /当前稳定版 <strong>v0\.9\.9<\/strong>/);
 assert.match(indexHtml, /“新品闪电推”不可以通过本脚本退出/);
 assert.match(indexHtml, /SALE 仍残留已经退出的活动/);
 assert.match(indexHtml, /活动页面加载较慢/);
 assert.match(indexHtml, /结束本次/);
+assert.match(indexHtml, /拖动/);
 assert.match(indexHtml, /“商品报名 &gt; 已报名”/);
 assert.match(indexHtml, /桌面通知/);
 assert.match(indexHtml, /标签标题会闪烁/);

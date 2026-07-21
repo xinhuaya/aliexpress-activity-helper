@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AliExpress Activity Helper
 // @namespace    local.ae.activity.helper
-// @version      0.9.8
+// @version      0.9.9
 // @description  速卖通活动助手：批量读取商品管理 SALE 数据并一键普通退出；新品闪电推不支持退出，将自动忽略。
 // @homepageURL  https://xinhuaya.github.io/aliexpress-activity-helper/
 // @supportURL   https://github.com/xinhuaya/aliexpress-activity-helper/issues
@@ -25,7 +25,7 @@
   if (window.top !== window.self) return;
 
   const STORE_KEY = 'ae.activity.assistant.v4';
-  const SCRIPT_VERSION = '0.9.8';
+  const SCRIPT_VERSION = '0.9.9';
   const MAX_BATCH_PRODUCTS = 10;
   const UNIFIED_NAVIGATION_TIMEOUT = 45000;
   const UNIFIED_BUTTON_STABLE_MS = 4000;
@@ -52,6 +52,7 @@
     autoExit: false,
     lastScanAt: '',
     channelId: '',
+    panelPosition: null,
     scriptVersion: '',
     ...safeJson(localStorage.getItem(STORE_KEY), {})
   };
@@ -74,6 +75,7 @@
   }
   state.paused = Boolean(state.paused);
   state.pauseReason = String(state.pauseReason || '');
+  state.panelPosition = normalizePanelPosition(state.panelPosition);
   if (!state.autoExit) {
     state.paused = false;
     state.pauseReason = '';
@@ -84,6 +86,7 @@
   let mtopReadyLogged = false;
   let attentionTimer = null;
   let attentionBaseTitle = '';
+  let panelDrag = null;
 
   function safeJson(text, fallback) {
     try {
@@ -91,6 +94,14 @@
     } catch {
       return fallback;
     }
+  }
+
+  function normalizePanelPosition(position) {
+    if (!position || typeof position !== 'object') return null;
+    const x = Number(position.x);
+    const y = Number(position.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x: Math.round(x), y: Math.round(y) };
   }
 
   function save() {
@@ -109,6 +120,7 @@
       pauseReason: state.pauseReason,
       lastScanAt: state.lastScanAt,
       channelId: state.channelId,
+      panelPosition: state.panelPosition,
       scriptVersion: SCRIPT_VERSION
     }));
   }
@@ -2023,12 +2035,113 @@
     }
   }
 
+  function clampPanelPosition(position) {
+    const normalized = normalizePanelPosition(position) || { x: 8, y: 8 };
+    const rect = root && typeof root.getBoundingClientRect === 'function'
+      ? root.getBoundingClientRect()
+      : { width: 0, height: 0 };
+    const viewportWidth = Number(pageWindow.innerWidth) || Number(document.documentElement.clientWidth) || 0;
+    const viewportHeight = Number(pageWindow.innerHeight) || Number(document.documentElement.clientHeight) || 0;
+    const margin = 8;
+    const width = Math.max(0, Number(rect.width) || 0);
+    const height = Math.max(0, Number(rect.height) || 0);
+    const maxX = viewportWidth
+      ? Math.max(margin, viewportWidth - Math.min(width, Math.max(0, viewportWidth - margin * 2)) - margin)
+      : Math.max(margin, normalized.x);
+    const maxY = viewportHeight
+      ? Math.max(margin, viewportHeight - Math.min(height, Math.max(0, viewportHeight - margin * 2)) - margin)
+      : Math.max(margin, normalized.y);
+    return {
+      x: Math.min(maxX, Math.max(margin, normalized.x)),
+      y: Math.min(maxY, Math.max(margin, normalized.y))
+    };
+  }
+
+  function applyPanelPosition({ persist = false } = {}) {
+    if (!root) return;
+    const position = normalizePanelPosition(state.panelPosition);
+    if (!position) {
+      root.style.left = '';
+      root.style.top = '';
+      root.style.right = '18px';
+      root.style.bottom = '18px';
+      return;
+    }
+    const clamped = clampPanelPosition(position);
+    state.panelPosition = clamped;
+    root.style.left = `${clamped.x}px`;
+    root.style.top = `${clamped.y}px`;
+    root.style.right = 'auto';
+    root.style.bottom = 'auto';
+    if (persist) save();
+  }
+
+  function panelDragHandle(target) {
+    if (!target || typeof target.closest !== 'function') return null;
+    const head = target.closest('.aeaa-head');
+    if (!head || target.closest('button,a,input,textarea,select,label')) return null;
+    return head;
+  }
+
+  function bindPanelDragging() {
+    root.addEventListener('pointerdown', (event) => {
+      if ((event.button !== undefined && event.button !== 0) || event.isPrimary === false) return;
+      if (!panelDragHandle(event.target)) return;
+      const rect = root.getBoundingClientRect();
+      panelDrag = {
+        pointerId: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        x: rect.left,
+        y: rect.top
+      };
+      if (typeof root.setPointerCapture === 'function') root.setPointerCapture(event.pointerId);
+      if (typeof event.preventDefault === 'function') event.preventDefault();
+    });
+
+    root.addEventListener('pointermove', (event) => {
+      if (!panelDrag || event.pointerId !== panelDrag.pointerId) return;
+      state.panelPosition = clampPanelPosition({
+        x: panelDrag.x + event.clientX - panelDrag.clientX,
+        y: panelDrag.y + event.clientY - panelDrag.clientY
+      });
+      applyPanelPosition();
+      if (typeof event.preventDefault === 'function') event.preventDefault();
+    });
+
+    const finishDrag = (event) => {
+      if (!panelDrag || event.pointerId !== panelDrag.pointerId) return;
+      if (typeof root.releasePointerCapture === 'function') {
+        try {
+          root.releasePointerCapture(event.pointerId);
+        } catch {
+          // The pointer can already be released when the page changes during a drag.
+        }
+      }
+      panelDrag = null;
+      save();
+    };
+    root.addEventListener('pointerup', finishDrag);
+    root.addEventListener('pointercancel', finishDrag);
+    root.addEventListener('dblclick', (event) => {
+      if (!panelDragHandle(event.target)) return;
+      state.panelPosition = null;
+      save();
+      applyPanelPosition();
+    });
+
+    if (pageWindow && typeof pageWindow.addEventListener === 'function') {
+      pageWindow.addEventListener('resize', () => applyPanelPosition({ persist: true }));
+    }
+  }
+
   function css() {
     return `
       #aeaa-root { position: fixed; right: 18px; bottom: 18px; width: min(470px, calc(100vw - 24px)); z-index: 2147483647; color: #17231f; font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif; }
       #aeaa-root * { box-sizing: border-box; letter-spacing: 0; }
       .aeaa-box { border: 1px solid #2b3b36; background: #fbfaf6; box-shadow: 0 18px 50px rgba(0,0,0,.24); border-radius: 8px; overflow: hidden; }
-      .aeaa-head { min-height: 42px; background: #20352f; color: #f7f4ea; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 12px; font-weight: 700; }
+      .aeaa-head { min-height: 42px; background: #20352f; color: #f7f4ea; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 12px; font-weight: 700; cursor: move; user-select: none; touch-action: none; }
+      .aeaa-head .aeaa-btn { cursor: pointer; }
       .aeaa-head small { color: #a8d7bd; font-weight: 500; }
       .aeaa-body { padding: 12px; }
       .aeaa-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
@@ -2152,7 +2265,7 @@
       <style>${css()}</style>
       ${renderCompletionNotice()}
       <div class="aeaa-box">
-        <div class="aeaa-head">
+        <div class="aeaa-head" title="拖动调整位置；双击恢复右下角">
           <span>AE 活动助手 <small>${statusText}</small></span>
           <button class="aeaa-btn secondary" data-act="min">-</button>
         </div>
@@ -2172,6 +2285,7 @@
           <div class="aeaa-log">${state.logs.length ? state.logs.map((item) => `<div class="${escapeHtml(item.level)}">[${escapeHtml(item.time)}] ${escapeHtml(item.message)}</div>`).join('') : '<div>等待操作</div>'}</div>
         </div>
       </div>`;
+    applyPanelPosition();
   }
 
   function bind() {
@@ -2204,6 +2318,7 @@
         const body = root.querySelector('.aeaa-body');
         body.style.display = body.style.display === 'none' ? 'block' : 'none';
         root.style.width = body.style.display === 'none' ? '168px' : '';
+        applyPanelPosition({ persist: Boolean(state.panelPosition) });
         return;
       }
       if (state.busy || state.autoExit) return;
@@ -2218,6 +2333,7 @@
     root.id = 'aeaa-root';
     document.documentElement.appendChild(root);
     bind();
+    bindPanelDragging();
     bindAttentionAcknowledgement();
     render();
     log('ok', upgradedFromOldVersion

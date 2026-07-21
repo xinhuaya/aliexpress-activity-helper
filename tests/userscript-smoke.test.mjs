@@ -16,7 +16,7 @@ class FixedDate extends Date {
 }
 
 const metadata = source.match(/\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==/)?.[0] || '';
-assert.match(metadata, /@version\s+0\.9\.8/);
+assert.match(metadata, /@version\s+0\.9\.9/);
 assert.match(metadata, /@grant\s+GM_notification/);
 assert.match(metadata, /@updateURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.meta\.js/);
 assert.match(metadata, /@downloadURL\s+https:\/\/xinhuaya\.github\.io\/aliexpress-activity-helper\/stable\/aliexpress-activity-helper\.user\.js/);
@@ -55,6 +55,9 @@ assert.match(source, /data-act="pause"/);
 assert.match(source, /data-act="stop"/);
 assert.match(source, /继续处理/);
 assert.match(source, /结束本次/);
+assert.match(source, /function bindPanelDragging/);
+assert.match(source, /panelPosition/);
+assert.match(source, /双击恢复右下角/);
 assert.match(source, /AE_USER_PAUSED/);
 assert.match(source, /exitPenaltyWarning/);
 assert.match(source, /队列已自动暂停并停留在当前页面/);
@@ -187,7 +190,7 @@ async function runStopPausedQueueScenario() {
     paused: true,
     pauseReason: '用户手动暂停',
     channelId: '9999999',
-    scriptVersion: '0.9.8'
+    scriptVersion: '0.9.9'
   }));
 
   const queueDocument = {
@@ -275,6 +278,136 @@ async function runStopPausedQueueScenario() {
 
 await runStopPausedQueueScenario();
 
+async function runPanelDragScenario() {
+  const dragStorage = new Map();
+  const dragHandlers = {};
+  const windowHandlers = {};
+  let dragRoot;
+  dragStorage.set('ae.activity.assistant.v4', JSON.stringify({
+    productId: '',
+    logs: [],
+    plan: [],
+    scanProductIds: [],
+    scanResults: [],
+    exitQueue: [],
+    autoExit: false,
+    channelId: '9999999',
+    scriptVersion: '0.9.9'
+  }));
+
+  const createDragRoot = () => {
+    const node = createRoot((mounted) => { dragRoot = mounted; }, dragHandlers);
+    node.getBoundingClientRect = () => ({
+      left: Number.parseFloat(node.style.left) || 710,
+      top: Number.parseFloat(node.style.top) || 350,
+      width: 470,
+      height: 400
+    });
+    node.setPointerCapture = () => {};
+    node.releasePointerCapture = () => {};
+    return node;
+  };
+  const dragDocument = {
+    readyState: 'complete',
+    title: '商品管理',
+    documentElement: {
+      appendChild(node) {
+        dragRoot = node;
+      }
+    },
+    getElementById() {
+      return null;
+    },
+    createElement() {
+      return createDragRoot();
+    },
+    addEventListener() {},
+    querySelector() {
+      return null;
+    },
+    querySelectorAll() {
+      return [];
+    }
+  };
+  const dragWindow = {
+    innerWidth: 1200,
+    innerHeight: 800,
+    location: {
+      search: '?channelId=9999999',
+      pathname: '/m_apps/productManage/list-manage',
+      href: 'https://csp.aliexpress.com/m_apps/productManage/list-manage?channelId=9999999'
+    },
+    addEventListener(type, handler) {
+      windowHandlers[type] = handler;
+    }
+  };
+  dragWindow.self = dragWindow;
+  dragWindow.top = dragWindow;
+
+  vm.runInNewContext(source, {
+    console,
+    Date: FixedDate,
+    Error,
+    JSON,
+    Math,
+    Number,
+    URLSearchParams,
+    document: dragDocument,
+    window: dragWindow,
+    localStorage: {
+      getItem(key) {
+        return dragStorage.get(key) ?? null;
+      },
+      setItem(key, value) {
+        dragStorage.set(key, value);
+      }
+    },
+    setInterval() {
+      return 1;
+    },
+    clearInterval() {},
+    setTimeout() {
+      return 1;
+    }
+  });
+
+  assert.equal(typeof dragHandlers.pointerdown, 'function');
+  assert.equal(typeof dragHandlers.pointermove, 'function');
+  assert.equal(typeof dragHandlers.pointerup, 'function');
+  const dragHandle = {
+    closest(selector) {
+      if (selector === '.aeaa-head') return this;
+      return null;
+    }
+  };
+  dragHandlers.pointerdown({
+    target: dragHandle,
+    button: 0,
+    isPrimary: true,
+    pointerId: 11,
+    clientX: 800,
+    clientY: 400,
+    preventDefault() {}
+  });
+  dragHandlers.pointermove({
+    pointerId: 11,
+    clientX: 300,
+    clientY: 100,
+    preventDefault() {}
+  });
+  dragHandlers.pointerup({ pointerId: 11 });
+
+  const draggedState = JSON.parse(dragStorage.get('ae.activity.assistant.v4'));
+  assert.deepEqual(draggedState.panelPosition, { x: 210, y: 50 });
+  assert.equal(dragRoot.style.left, '210px');
+  assert.equal(dragRoot.style.top, '50px');
+  assert.equal(dragRoot.style.right, 'auto');
+  assert.equal(dragRoot.style.bottom, 'auto');
+  assert.equal(typeof windowHandlers.resize, 'function');
+}
+
+await runPanelDragScenario();
+
 async function runCompletionNoticeScenario() {
   const productIds = ['1005000000000088', '1005000000000089'];
   const completionStorage = new Map();
@@ -304,7 +437,7 @@ async function runCompletionNoticeScenario() {
     completionNotice: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.8'
+    scriptVersion: '0.9.9'
   }));
 
   const completionDocument = {
@@ -884,7 +1017,7 @@ async function runExitEntryScenario(
     exitQueue: [row],
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.8'
+    scriptVersion: '0.9.9'
   }));
 
   const document = {
@@ -1100,7 +1233,7 @@ async function runSaleResidueScenario(mode) {
     },
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.8'
+    scriptVersion: '0.9.9'
   }));
 
   const document = {
@@ -1326,7 +1459,7 @@ async function runBatchFailurePauseScenario() {
     },
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.8'
+    scriptVersion: '0.9.9'
   }));
 
   const document = {
@@ -1626,7 +1759,7 @@ async function runDelayedStockoutReasonScenario({ penalty = false } = {}) {
     },
     autoExit: true,
     channelId: '1882016',
-    scriptVersion: '0.9.8'
+    scriptVersion: '0.9.9'
   }));
 
   const document = {
@@ -1887,7 +2020,7 @@ async function runUnifiedSequentialEntryScenario() {
     exitFlow: null,
     autoExit: true,
     channelId: '9999999',
-    scriptVersion: '0.9.8'
+    scriptVersion: '0.9.9'
   }));
 
   const document = {
